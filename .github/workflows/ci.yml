@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ceo_admin
+          POSTGRES_PASSWORD: ceo_admin
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ceo_admin" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # The postgres image makes POSTGRES_USER a superuser, and superusers ignore
+      # row-level security. The tests connect as an ordinary user created below.
+      TEST_DATABASE_URL: postgres://ceo_app:ceo_app@localhost:5432/ceo_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Create an ordinary database user for the tests
+        env:
+          PGPASSWORD: ceo_admin
+        run: |
+          psql -h localhost -U ceo_admin -d postgres -c "CREATE ROLE ceo_app LOGIN PASSWORD 'ceo_app'"
+          psql -h localhost -U ceo_admin -d postgres -c "CREATE DATABASE ceo_test OWNER ceo_app"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

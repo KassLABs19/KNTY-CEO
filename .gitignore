@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+licence-private*
+.DS_Store
+Thumbs.db
+.tmp-pg/
+.tmp-pg-dev/

@@ -1,0 +1,36 @@
+KNTY CEO — Proprietary Software Licence
+
+Copyright (c) 2026 KassLABs. All rights reserved.
+
+This software, including its source code, object code, documentation, designs and
+related files (together, the "Software"), is the confidential and proprietary property
+of KassLABs (the "Owner").
+
+1. No licence is granted by access. Having a copy of, or access to, the Software does
+   not give you any right to use, copy, modify, merge, publish, distribute, sublicense,
+   sell, rent or lend it, or to create works based on it, except as set out in a
+   separate written agreement signed by the Owner.
+
+2. Customers. A customer may install and use the Software only as allowed by its written
+   agreement with the Owner and, where the server is hosted by the customer, by a valid
+   licence file issued by the Owner. Altering, removing or getting around the licence
+   check is not permitted.
+
+3. Contributors and staff. People who work on the Software for the Owner may use and
+   change it only to do that work, and must keep it confidential.
+
+4. Reverse engineering. You may not decompile, disassemble or reverse engineer the
+   Software, except to the extent the law expressly allows this despite this term.
+
+5. Third-party components. The Software includes open-source components that are
+   licensed under their own terms, listed in THIRD_PARTY_NOTICES.md. Nothing in this
+   licence limits your rights under those terms for those components.
+
+6. No warranty. Unless a written agreement says otherwise, the Software is provided
+   "as is", without warranty of any kind, and the Owner is not liable for any damages
+   arising from its use, to the fullest extent the law allows.
+
+7. Ending. Any right to use the Software ends automatically if you break these terms.
+   You must then stop using it and delete every copy you hold.
+
+For licensing questions, contact the Owner.

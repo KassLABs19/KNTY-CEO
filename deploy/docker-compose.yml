@@ -1,0 +1,45 @@
+# Own-server install: the KNTY CEO server plus its database, on one machine.
+#   1. Copy deploy/.env.example to deploy/.env and fill it in.
+#   2. Put the licence.json you received next to this file.
+#   3. docker compose up -d
+# The server is then at http://<this machine>:8090. Put HTTPS in front of it
+# (for example Caddy or your existing reverse proxy) before anyone uses it.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ceo_owner
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
+      POSTGRES_DB: knty_ceo
+      APP_DB_PASSWORD: ${DB_APP_PASSWORD}
+    volumes:
+      - ceo-db:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ceo_owner -d knty_ceo']
+      interval: 5s
+      retries: 20
+
+  server:
+    image: ${CEO_IMAGE:-ghcr.io/kasslabs19/knty-ceo:latest}
+    build: ..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ceo_app:${DB_APP_PASSWORD}@db:5432/knty_ceo
+      JWT_SECRET: ${JWT_SECRET}
+      APP_ENV: ${APP_ENV:-production}
+      HOSTING_MODE: self
+      LICENCE_PATH: /licence/licence.json
+      LICENCE_PUBLIC_KEY: ${LICENCE_PUBLIC_KEY}
+      MIN_DESKTOP_VERSION: ${MIN_DESKTOP_VERSION:-0.1.0}
+    volumes:
+      - ./licence.json:/licence/licence.json:ro
+    ports:
+      - '8090:8090'
+
+volumes:
+  ceo-db:

@@ -1,0 +1,23 @@
+{
+  "name": "knty-ceo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KNTY CEO: the company control center. Windows desktop app for executives, admins and heads of department, with a Node.js + PostgreSQL server that connects to the HR system and Predicto.",
+  "license": "SEE LICENSE IN LICENSE",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @ceo/shared && npm run build -w @ceo/server && npm run build -w @ceo/desktop",
+    "typecheck": "npm run build -w @ceo/shared && npm run typecheck --workspaces --if-present",
+    "test": "npm run build -w @ceo/shared && npm run test --workspaces --if-present",
+    "db:migrate": "npm run migrate -w @ceo/server",
+    "db:seed": "npm run seed -w @ceo/server",
+    "dev:server": "npm run dev -w @ceo/server",
+    "dev:desktop": "npm run dev -w @ceo/desktop"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

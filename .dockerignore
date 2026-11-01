@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+**/dist
+**/dist-electron
+**/release
+.tmp-pg*
+**/.env
+.git
+apps/desktop/*
+!apps/desktop/package.json

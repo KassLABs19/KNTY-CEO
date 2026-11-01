@@ -1,0 +1,51 @@
+/* KNTY CEO look: the same warm, low-glare paper tones as the HR system, with a teal accent. */
+:root {
+  --page: #f3eee3;
+  --surface: #fbf8f1;
+  --surface-alt: #eae3d4;
+  --surface-tint: #efe8da;
+  --line: #e0d7c5;
+  --line-strong: #cfc5b1;
+  --text: #2b2620;
+  --text-2: #3e382f;
+  --text-quiet: #5f574c;
+  --accent: #1f5f5b;
+  --accent-dark: #163f3c;
+  --accent-soft: #dce7e6;
+  --info-bg: #e1e8f0; --info: #28456b;
+  --good-bg: #e1ebd8; --good: #2e5a2c;
+  --warn-bg: #f3e3c4; --warn: #6e4508;
+  --bad-bg: #f4ddd0; --bad: #8a3d12;
+  --radius: 12px;
+  font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--page);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); }
+a { color: var(--accent); }
+a:hover { color: var(--accent-dark); }
+button, input, select, textarea { font: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 14px; font-weight: 500; }
+.input { min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fffdf8; color: var(--text); }
+textarea.input { padding: 10px 12px; min-height: 64px; resize: vertical; }
+.btn { min-height: 44px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-weight: 600; cursor: pointer; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.btn-danger { background: transparent; border-color: #b9652f; color: var(--bad); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.alert { border-radius: 8px; padding: 10px 14px; font-size: 14px; line-height: 1.5; }
+.alert-info { background: var(--info-bg); color: var(--info); }
+.alert-bad { background: var(--bad-bg); color: var(--bad); }
+.alert-warn { background: var(--warn-bg); color: var(--warn); }
+.alert-good { background: var(--good-bg); color: var(--good); }
+.quiet { color: var(--text-quiet); }
+.mono { font-family: 'IBM Plex Mono', Consolas, ui-monospace, monospace; }
+.pill { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: #ece6d9; color: var(--text-2); white-space: nowrap; }
+.pill-good { background: var(--good-bg); color: var(--good); }
+.pill-warn { background: var(--warn-bg); color: var(--warn); }
+.pill-bad { background: var(--bad-bg); color: var(--bad); }
+.pill-info { background: var(--info-bg); color: var(--info); }

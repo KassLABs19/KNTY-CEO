@@ -1,0 +1,44 @@
+# Builds the Windows installer. Run in CI (see .github/workflows/release-windows.yml)
+# or on a Windows PC with: npm run dist:win -w @ceo/desktop
+appId: com.kasslabs.kntyceo
+productName: KNTY CEO
+copyright: Copyright © 2026 KassLABs
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+extraResources:
+  - from: ../../LICENSE
+    to: LICENSE.txt
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+asar: true
+# Invite links (kntyceo://invite/...) open the app.
+protocols:
+  - name: KNTY CEO invite
+    schemes: [kntyceo]
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  artifactName: KNTY-CEO-Setup-${version}.${ext}
+  # Code signing: set CSC_LINK (the .pfx file, base64) and CSC_KEY_PASSWORD in CI.
+  # Without them the installer still builds but Windows shows an "unknown publisher" warning.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: KNTY CEO
+  deleteAppDataOnUninstall: false
+publish:
+  # Updates are served from GitHub Releases. electron-updater checks there on start.
+  provider: github
+  owner: KassLABs19
+  repo: KNTY-CEO
+  releaseType: release
