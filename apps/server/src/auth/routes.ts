@@ -1,9 +1,10 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { isVersionSupported, type InviteInfo, type LoginResponse, type ReauthResponse, type SessionTokens } from '@ceo/shared';
 import type { Config } from '../config.js';
 import { withCompany, withSystem, type Db, type Tx } from '../db.js';
 import { audit } from '../audit.js';
+import { noContent, outcome } from '../errors.js';
 import { requireAuth } from '../guard.js';
 import { dummyHash, hashPassword, passwordProblem, verifyPassword } from './password.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from './totp.js';
@@ -44,9 +45,6 @@ const USER_SQL = `SELECT u.id, u.company_id, u.email, u.password_hash, u.status,
   u.totp_secret, u.totp_enabled, (r.requires_2fa OR u.is_owner) AS requires_2fa, p.left_on::text AS left_on
   FROM users u JOIN roles r ON r.id = u.role_id JOIN people p ON p.id = u.person_id`;
 
-function fail(reply: FastifyReply, status: number, error: string, message: string) {
-  return reply.status(status).send({ error, message });
-}
 
 export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config) {
   const ip = (req: FastifyRequest) => req.ip;
@@ -82,32 +80,32 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
 
   app.post('/api/auth/login', limited, async (req, reply) => {
     const parsed = loginBody.safeParse(req.body);
-    if (!parsed.success) return fail(reply, 400, 'invalid_request', 'Enter your email and password.');
+    if (!parsed.success) return outcome(400, 'invalid_request', 'Enter your email and password.');
     const { email, password, appVersion } = parsed.data;
     if (!isVersionSupported(appVersion, config.MIN_DESKTOP_VERSION)) {
-      return fail(reply, 426, 'update_required', `This version of the app is no longer supported. Update to ${config.MIN_DESKTOP_VERSION} or later.`);
+      return outcome(426, 'update_required', `This version of the app is no longer supported. Update to ${config.MIN_DESKTOP_VERSION} or later.`);
     }
 
     const user = await withSystem(db, async (tx) => (await tx.query<UserRow>(`${USER_SQL} WHERE lower(u.email) = lower($1)`, [email])).rows[0]);
     const passwordOk = await verifyPassword(password, user?.password_hash ?? (await dummyHash()));
     const generic = 'That email and password don’t match.';
-    if (!user) return fail(reply, 401, 'invalid_credentials', generic);
+    if (!user) return outcome(401, 'invalid_credentials', generic);
 
     return withCompany(db, user.company_id, async (tx) => {
       const base = { companyId: user.company_id, actorUserId: user.id, ip: ip(req) };
       if (user.locked_at) {
         await audit(tx, { ...base, action: 'auth.login_blocked_locked', category: 'security' });
-        return fail(reply, 423, 'account_locked', 'This account is locked after too many failed attempts. Ask an account owner to unlock it.');
+        return outcome(423, 'account_locked', 'This account is locked after too many failed attempts. Ask an account owner to unlock it.');
       }
       if (user.status !== 'active' || !user.password_hash) {
         await audit(tx, { ...base, action: 'auth.login_blocked_status', category: 'security', detail: { status: user.status } });
-        return fail(reply, 401, 'invalid_credentials', generic);
+        return outcome(401, 'invalid_credentials', generic);
       }
       if (!passwordOk) {
         const locked = await countFailure(tx, user, base, 'auth.login_failed');
         return locked
-          ? fail(reply, 423, 'account_locked', 'Too many failed attempts. This account is now locked; an account owner can unlock it.')
-          : fail(reply, 401, 'invalid_credentials', generic);
+          ? outcome(423, 'account_locked', 'Too many failed attempts. This account is now locked; an account owner can unlock it.')
+          : outcome(401, 'invalid_credentials', generic);
       }
       if (user.requires_2fa || user.totp_enabled) {
         if (!user.totp_enabled) {
@@ -133,20 +131,20 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
 
   app.post('/api/auth/2fa', limited, async (req, reply) => {
     const parsed = twoFactorBody.safeParse(req.body);
-    if (!parsed.success) return fail(reply, 400, 'invalid_request', 'Enter the 6-digit code.');
+    if (!parsed.success) return outcome(400, 'invalid_request', 'Enter the 6-digit code.');
     let challenge;
     try {
       challenge = await verifyChallengeToken(parsed.data.challengeToken, config.JWT_SECRET);
     } catch {
-      return fail(reply, 401, 'challenge_expired', 'This sign-in took too long. Start again.');
+      return outcome(401, 'challenge_expired', 'This sign-in took too long. Start again.');
     }
     const user = await withSystem(db, async (tx) => (await tx.query<UserRow>(`${USER_SQL} WHERE u.id = $1`, [challenge.userId])).rows[0]);
-    if (!user || !user.totp_secret || user.locked_at || user.status !== 'active') return fail(reply, 401, 'invalid_credentials', 'Sign-in failed. Start again.');
+    if (!user || !user.totp_secret || user.locked_at || user.status !== 'active') return outcome(401, 'invalid_credentials', 'Sign-in failed. Start again.');
     return withCompany(db, user.company_id, async (tx) => {
       const base = { companyId: user.company_id, actorUserId: user.id, ip: ip(req) };
       if (!verifyTotp(parsed.data.code, user.totp_secret!)) {
         const locked = await countFailure(tx, user, base, 'auth.2fa_failed');
-        return fail(reply, locked ? 423 : 401, locked ? 'account_locked' : 'invalid_code', locked ? 'Too many failed attempts. This account is now locked.' : 'That code isn’t right. Try the newest one.');
+        return outcome(locked ? 423 : 401, locked ? 'account_locked' : 'invalid_code', locked ? 'Too many failed attempts. This account is now locked.' : 'That code isn’t right. Try the newest one.');
       }
       if (challenge.setup) {
         await tx.query('UPDATE users SET totp_enabled = true WHERE id = $1', [user.id]);
@@ -161,7 +159,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
   app.post('/api/auth/refresh', async (req, reply) => {
     const parsed = tokenBody.safeParse(req.body ?? {});
     const token = parsed.success ? parsed.data.refreshToken : null;
-    if (!token) return fail(reply, 401, 'signed_out', 'Please sign in.');
+    if (!token) return outcome(401, 'signed_out', 'Please sign in.');
     const session = await withSystem(db, async (tx) =>
       (await tx.query<{ id: string; company_id: string; user_id: string; app_version: string | null; last_used_at: Date; expires_at: Date; revoked_at: Date | null }>(
         'SELECT id, company_id, user_id, app_version, last_used_at, expires_at, revoked_at FROM sessions WHERE refresh_hash = $1',
@@ -170,13 +168,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
     );
     const idleLimit = config.SIGN_OUT_AFTER_IDLE_MINUTES * 60_000;
     if (!session || session.revoked_at || session.expires_at < new Date() || Date.now() - session.last_used_at.getTime() > idleLimit) {
-      return fail(reply, 401, 'signed_out', 'You were signed out. Please sign in again.');
+      return outcome(401, 'signed_out', 'You were signed out. Please sign in again.');
     }
     return withCompany(db, session.company_id, async (tx) => {
       const user = (await tx.query<UserRow>(`${USER_SQL} WHERE u.id = $1`, [session.user_id])).rows[0];
       // Rotate: the old refresh token stops working whatever happens next.
       await tx.query('UPDATE sessions SET revoked_at = now() WHERE id = $1', [session.id]);
-      if (!user || user.locked_at || user.status !== 'active') return fail(reply, 401, 'signed_out', 'Please sign in again.');
+      if (!user || user.locked_at || user.status !== 'active') return outcome(401, 'signed_out', 'Please sign in again.');
       return issueSession(tx, user, session.app_version ?? '0.0.0');
     });
   });
@@ -185,13 +183,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
     const parsed = tokenBody.safeParse(req.body ?? {});
     const token = parsed.success ? parsed.data.refreshToken : null;
     if (token) await withSystem(db, (tx) => tx.query('UPDATE sessions SET revoked_at = now() WHERE refresh_hash = $1 AND revoked_at IS NULL', [hashToken(token)]));
-    return reply.status(204).send();
+    return noContent();
   });
 
   // Re-enter the password before a sensitive action (signing payroll, changing access, settings).
   app.post('/api/auth/reauth', { ...limited, preHandler: requireAuth(db, config.JWT_SECRET) }, async (req, reply) => {
     const parsed = z.object({ password: z.string().min(1).max(200) }).safeParse(req.body);
-    if (!parsed.success) return fail(reply, 400, 'invalid_request', 'Enter your password.');
+    if (!parsed.success) return outcome(400, 'invalid_request', 'Enter your password.');
     const u = req.user!;
     return withCompany(db, u.companyId, async (tx) => {
       const user = (await tx.query<UserRow>(`${USER_SQL} WHERE u.id = $1`, [u.id])).rows[0]!;
@@ -199,7 +197,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
       if (!(await verifyPassword(parsed.data.password, user.password_hash ?? (await dummyHash())))) {
         const locked = await countFailure(tx, user, base, 'auth.reauth_failed');
         if (locked) await tx.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [u.id]);
-        return fail(reply, locked ? 423 : 401, locked ? 'account_locked' : 'invalid_credentials', locked ? 'Too many failed attempts. This account is now locked.' : 'That password isn’t right.');
+        return outcome(locked ? 423 : 401, locked ? 'account_locked' : 'invalid_credentials', locked ? 'Too many failed attempts. This account is now locked.' : 'That password isn’t right.');
       }
       await tx.query('UPDATE users SET failed_attempts = 0 WHERE id = $1', [u.id]);
       const res: ReauthResponse = { reauthToken: await signReauthToken(u.id, u.sessionId, config.REAUTH_MINUTES, config.JWT_SECRET), expiresIn: config.REAUTH_MINUTES * 60 };
@@ -223,26 +221,26 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: Config)
   app.get('/api/invites/:token', limited, async (req, reply) => {
     const { token } = req.params as { token: string };
     const invite = await findInvite(token);
-    if (!inviteUsable(invite)) return fail(reply, 404, 'invite_invalid', 'This invite link has expired or was already used. Ask an account owner to send a new one.');
+    if (!inviteUsable(invite)) return outcome(404, 'invite_invalid', 'This invite link has expired or was already used. Ask an account owner to send a new one.');
     const info: InviteInfo = { fullName: invite!.full_name, email: invite!.email, roleName: invite!.role_name, requires2fa: invite!.requires_2fa };
     return info;
   });
 
   app.post('/api/invites/accept', limited, async (req, reply) => {
     const parsed = z.object({ token: z.string().min(10).max(200), password: z.string().min(1).max(200) }).safeParse(req.body);
-    if (!parsed.success) return fail(reply, 400, 'invalid_request', 'Enter a password.');
+    if (!parsed.success) return outcome(400, 'invalid_request', 'Enter a password.');
     const problem = passwordProblem(parsed.data.password);
-    if (problem) return fail(reply, 400, 'weak_password', problem);
+    if (problem) return outcome(400, 'weak_password', problem);
     const invite = await findInvite(parsed.data.token);
-    if (!inviteUsable(invite)) return fail(reply, 404, 'invite_invalid', 'This invite link has expired or was already used. Ask an account owner to send a new one.');
+    if (!inviteUsable(invite)) return outcome(404, 'invite_invalid', 'This invite link has expired or was already used. Ask an account owner to send a new one.');
     const hash = await hashPassword(parsed.data.password);
     return withCompany(db, invite!.company_id, async (tx) => {
       // The invite is single-use: claim it first so two attempts can't both succeed.
       const claimed = await tx.query('UPDATE invites SET used_at = now() WHERE id = $1 AND used_at IS NULL', [invite!.id]);
-      if (claimed.rowCount !== 1) return fail(reply, 404, 'invite_invalid', 'This invite link was already used.');
+      if (claimed.rowCount !== 1) return outcome(404, 'invite_invalid', 'This invite link was already used.');
       await tx.query(`UPDATE users SET password_hash = $2, status = 'active', failed_attempts = 0 WHERE id = $1`, [invite!.user_id, hash]);
       await audit(tx, { companyId: invite!.company_id, actorUserId: invite!.user_id, action: 'logins.invite_accepted', category: 'logins', ip: ip(req) });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 }

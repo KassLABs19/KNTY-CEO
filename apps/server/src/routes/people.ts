@@ -6,7 +6,7 @@ import { withCompany, type Db, type Tx } from '../db.js';
 import { requireAuth } from '../guard.js';
 import { audit } from '../audit.js';
 import { newRandomToken, reauthValid } from '../auth/tokens.js';
-import { AppError } from '../errors.js';
+import { AppError, noContent } from '../errors.js';
 
 const id = z.object({ id: z.string().uuid() });
 
@@ -73,7 +73,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       }
       await tx.query('UPDATE users SET is_owner = $2 WHERE id = $1', [userId, body.data.owner]);
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: body.data.owner ? 'logins.owner_added' : 'logins.owner_removed', category: 'access', targetType: 'user', targetId: userId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -87,7 +87,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       await tx.query('UPDATE invites SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
       await tx.query(`UPDATE users SET status = 'removed', is_owner = false WHERE id = $1`, [userId]);
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.invite_cancelled', category: 'logins', targetType: 'user', targetId: userId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -138,7 +138,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       await tx.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [userId]);
       await tx.query('UPDATE delegations SET ended_at = now() WHERE (from_user_id = $1 OR to_user_id = $1) AND ended_at IS NULL', [userId]);
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.suspended', category: 'logins', targetType: 'user', targetId: userId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -155,7 +155,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       const res = await tx.query(`UPDATE users SET status = CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END, locked_at = NULL, failed_attempts = 0 WHERE id = $1 AND status = 'suspended'`, [userId]);
       if (res.rowCount === 0) throw new AppError(400, 'not_suspended', 'Only a suspended login can be reactivated.');
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.reactivated', category: 'logins', targetType: 'user', targetId: userId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -166,7 +166,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       const res = await tx.query('UPDATE users SET locked_at = NULL, failed_attempts = 0 WHERE id = $1 AND locked_at IS NOT NULL', [userId]);
       if (res.rowCount === 0) throw new AppError(404, 'not_found', 'No locked account with that id.');
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.unlocked', category: 'security', targetType: 'user', targetId: userId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -182,7 +182,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       if (res.rowCount === 0) throw new AppError(404, 'not_found', 'No such login.');
       await tx.query('UPDATE people SET needs_role_review = false WHERE id = $1', [res.rows[0]!.person_id]);
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'access.role_changed', category: 'access', targetType: 'user', targetId: userId, ip: req.ip, detail: { roleId: body.data.roleId } });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 
@@ -233,7 +233,7 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       const res = await tx.query('UPDATE delegations SET ended_at = now() WHERE id = $1 AND ended_at IS NULL AND ($2 OR from_user_id = $3)', [delegationId, u.isOwner, u.id]);
       if (res.rowCount === 0) throw new AppError(404, 'not_found', 'No active delegation of yours with that id.');
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'delegation.ended', category: 'access', targetType: 'delegation', targetId: delegationId, ip: req.ip });
-      return reply.status(204).send();
+      return noContent();
     });
   });
 }

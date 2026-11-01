@@ -6,7 +6,7 @@ import { withCompany, type Db } from '../db.js';
 import { requireAuth } from '../guard.js';
 import { reauthValid } from '../auth/tokens.js';
 import { canSee, decide, loadRules, loadSteps, type RequestRow } from '../approvals.js';
-import { AppError } from '../errors.js';
+import { AppError, outcome } from '../errors.js';
 import { detail, summarize } from '../views.js';
 
 const decideBody = z.object({
@@ -48,7 +48,7 @@ export function registerRequestRoutes(app: FastifyInstance, db: Db, config: Conf
     const u = req.user!;
     return withCompany(db, u.companyId, async (tx) => {
       const r = (await tx.query<RequestRow>('SELECT * FROM requests WHERE id = $1', [id])).rows[0];
-      if (!r || !(await canSee(tx, u, r, await loadSteps(tx, r.id)))) return reply.status(404).send({ error: 'not_found', message: 'Request not found.' });
+      if (!r || !(await canSee(tx, u, r, await loadSteps(tx, r.id)))) return outcome(404, 'not_found', 'Request not found.');
       return detail(tx, u, r);
     });
   });

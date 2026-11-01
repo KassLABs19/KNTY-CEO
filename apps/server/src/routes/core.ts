@@ -215,7 +215,7 @@ export function registerCoreRoutes(app: FastifyInstance, db: Db, config: Config,
   app.get('/api/audit/export', { preHandler: auth({ module: 'audit' }) }, async (req, reply) => {
     const q = auditQuery.parse({ ...(req.query as object), limit: 200 });
     const u = req.user!;
-    return withCompany(db, u.companyId, async (tx) => {
+    const csv = await withCompany(db, u.companyId, async (tx) => {
       const rows = (await tx.query(auditSql.replace('LIMIT $3', 'LIMIT 10000'), [q.category ?? null, q.before ?? null])).rows;
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'audit.exported', category: 'sensitive', ip: req.ip, detail: { rows: rows.length, category: q.category ?? 'all' } });
       const lines = [
@@ -223,7 +223,9 @@ export function registerCoreRoutes(app: FastifyInstance, db: Db, config: Config,
         ['When', 'Who', 'On behalf of', 'Action', 'Category', 'Target', 'Trace'].map(csvCell).join(','),
         ...rows.map((r) => [r.createdAt.toISOString(), r.actor, r.onBehalfOf, r.action, r.category, `${r.targetType ?? ''} ${r.targetId ?? ''}`.trim(), r.traceId].map(csvCell).join(',')),
       ];
-      return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="audit-log.csv"').send(lines.join('\r\n'));
+      return lines.join('\r\n');
     });
+    // Sent only after the export is logged.
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="audit-log.csv"').send(csv);
   });
 }

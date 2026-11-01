@@ -4,7 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import { ZodError } from 'zod';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
-import { AppError } from './errors.js';
+import { AppError, Outcome } from './errors.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { registerCoreRoutes } from './routes/core.js';
 import { registerRequestRoutes } from './routes/requests.js';
@@ -30,6 +30,15 @@ export async function buildApp(db: Db, config: Config, licence: () => LicenceSta
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('Cache-Control', 'no-store');
+  });
+
+  // Handlers return an Outcome for non-200 answers; it is sent only after their transaction commits.
+  app.addHook('preSerialization', async (_req, reply, payload) => {
+    if (payload instanceof Outcome) {
+      reply.code(payload.status);
+      return payload.body ?? {};
+    }
+    return payload;
   });
 
   // Self-hosted servers with an expired or invalid licence keep working read-only.
