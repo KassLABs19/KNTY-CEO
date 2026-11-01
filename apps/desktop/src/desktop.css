@@ -111,3 +111,23 @@ th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: 
   .side .brand span:not(.mark), .who, .nav { font-size: 0; }
   .nav { justify-content: center; padding: 0; }
 }
+
+/* Logins & people */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.gap { gap: 14px; }
+.pad-x { padding: 18px 20px 12px; }
+.change { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 14px; line-height: 1.5; }
+.change .pill { min-width: 64px; justify-content: center; }
+.tag { margin-left: 6px; }
+.warn-text { color: var(--warn); font-weight: 600; }
+.btn.icon { width: 44px; padding: 0; font-size: 18px; }
+.btn-danger-solid { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+table.people td { vertical-align: middle; }
+table.people .name { font-weight: 500; }
+table.people td.actions { text-align: right; white-space: nowrap; }
+table.people tr.open td { background: var(--surface-tint); }
+table.people tr.row-actions td { background: var(--surface-tint); padding: 8px 16px 14px; }
+table.people tr.row-actions select { min-width: 200px; }
+.two > .card { gap: 12px; }
+.btn { white-space: nowrap; }
+.change .btn { flex: 0 0 auto; }

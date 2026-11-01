@@ -16,7 +16,7 @@ async function notifyOwners(tx: Tx, companyId: string, kind: string, text: strin
  */
 export async function applyLeaver(tx: Tx, companyId: string, personId: string, traceId: string | null): Promise<boolean> {
   const user = (await tx.query<{ id: string; status: string }>('SELECT id, status FROM users WHERE person_id = $1', [personId])).rows[0];
-  if (!user || user.status === 'suspended') return false;
+  if (!user || user.status === 'suspended' || user.status === 'removed') return false;
   await tx.query(`UPDATE users SET status = 'suspended' WHERE id = $1`, [user.id]);
   await tx.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [user.id]);
   await tx.query('UPDATE delegations SET ended_at = now() WHERE (from_user_id = $1 OR to_user_id = $1) AND ended_at IS NULL', [user.id]);

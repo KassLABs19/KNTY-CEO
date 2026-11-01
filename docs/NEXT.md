@@ -1,12 +1,10 @@
 # What comes next
 
-The foundation, sign-in, Overview, Approvals and Audit log screens are in place. Each item
+The foundation, sign-in, Overview, Approvals, Logins & people and Audit log screens are in place. Each item
 below is designed in the Control Center mockup and the build spec. Suggested order:
 
-1. **Logins & people screen** — the API is in place (`/api/people`, invite, suspend,
-   reactivate, unlock, change role). Add the HR sync panel (joiners, movers, leavers), the
-   "Review" flag after a job change, the backup-owner card, and a confirm step for suspend.
-   Still to add on the server: backup owner endpoint (at least one active owner is enforced).
+1. **Invite emails** — today the owner copies the one-time link and sends it. Add sending by
+   email (the HR system's mail settings, or an SMTP setting) with the link never stored.
 2. **Access & roles screen** — the access matrix grouped by system, with a sticky first
    column. Server: `PUT /api/roles/:id` (levels through `sanitizeLevels`, password again),
    custom roles, and "View as" (client-only, read-only).

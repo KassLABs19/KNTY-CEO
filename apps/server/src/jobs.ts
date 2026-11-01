@@ -49,7 +49,7 @@ export async function sweepCompany(db: Db, companyId: string, now = new Date()):
     }
     // Leavers whose exit date has now arrived.
     const leavers = (await tx.query<{ id: string }>(
-      `SELECT p.id FROM people p JOIN users u ON u.person_id = p.id WHERE p.left_on <= $1::date AND u.status <> 'suspended'`,
+      `SELECT p.id FROM people p JOIN users u ON u.person_id = p.id WHERE p.left_on <= $1::date AND u.status NOT IN ('suspended', 'removed')`,
       [now.toISOString().slice(0, 10)],
     )).rows;
     for (const p of leavers) await applyLeaver(tx, companyId, p.id, null);

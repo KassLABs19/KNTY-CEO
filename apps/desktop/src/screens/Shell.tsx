@@ -5,6 +5,7 @@ import { bridge } from '../bridge';
 import { Overview } from './Overview';
 import { Approvals } from './Approvals';
 import { AuditLog } from './AuditLog';
+import { Logins } from './Logins';
 
 type Page = 'overview' | 'approvals' | 'logins' | 'access' | 'audit' | 'settings';
 
@@ -103,7 +104,8 @@ export function Shell({ me, env, appVersion, onSignOut }: { me: Me; env: string;
           {page === 'overview' && <Overview me={me} onOpen={goToRequest} onAll={() => setPage('approvals')} />}
           {page === 'approvals' && <Approvals me={me} initialId={openRequest} />}
           {page === 'audit' && <AuditLog />}
-          {(page === 'logins' || page === 'access' || page === 'settings') && (
+          {page === 'logins' && <Logins me={me} />}
+          {(page === 'access' || page === 'settings') && (
             <>
               <h1>{PAGES.find((p) => p.id === page)!.label}</h1>
               <div className="card quiet">This screen is designed in the mockup and its API is in place. The screen arrives in the next build (see docs/NEXT.md).</div>

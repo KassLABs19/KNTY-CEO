@@ -33,14 +33,18 @@ who exist in the HR system can be invited.
 - **Partner link**: signed messages in both directions, de-duplicated, versioned, with an
   outbox that retries until the partner confirms; HR joiner, mover and leaver events
   keep logins in step (leavers are suspended at once)
+- **Logins & people**: changes from the HR system (joiners, movers, leavers), account
+  owners and a backup owner, one-time invite links for people in the HR system, and per
+  person: change role, suspend (with a confirm step), reactivate, unlock, resend or cancel
+  an invite
 - **Audit log** that cannot be edited or deleted, with trace ids and a CSV export that
   carries the downloader's name
 - **Companies kept apart** inside the database (row-level security)
 - **Signed licences** for self-hosted servers (read-only mode if expired)
 - **Automatic updates** for the Windows app from GitHub Releases
 
-Logins & people, Access & roles and Settings have their server endpoints in place; their
-screens come next. See [docs/NEXT.md](docs/NEXT.md).
+Access & roles and Settings have part of their server endpoints in place; their screens
+come next. See [docs/NEXT.md](docs/NEXT.md).
 
 ## Try it on your computer
 

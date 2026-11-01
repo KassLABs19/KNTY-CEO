@@ -9,7 +9,8 @@
    git push origin main --tags
    ```
 3. GitHub Actions ("Release Windows app") builds `KNTY-CEO-Setup-0.2.0.exe` and publishes it
-   as a GitHub Release. Installed apps download it and install on restart.
+   as a release in **KassLABs19/KNTY-CEO-releases**. Installed apps download it and install
+   on restart.
 
 The tag must match the version number, or the build stops on purpose.
 
@@ -28,12 +29,24 @@ Without a certificate, Windows shows "Unknown publisher". Buy a Windows code-sig
 certificate and add two repository secrets: `WINDOWS_CERT_BASE64` (the .pfx file,
 base64-encoded) and `WINDOWS_CERT_PASSWORD`.
 
-### Private repository
+### Where installers live (one-time setup)
 
-electron-updater reads releases without signing in, so automatic updates need the releases
-somewhere public. While this repository is private, publish releases to a separate public
-"releases" repository or a download server instead (change `publish` in
-`apps/desktop/electron-builder.yml`).
+This repository is private, and installed apps check for updates without signing in, so
+installers are published to a separate **public** repository that contains no source code:
+
+1. Create the public repository `KassLABs19/KNTY-CEO-releases`. Tick "Add a README" so it
+   has a first commit (releases need one). Write in the README that it only hosts installers.
+2. Create a fine-grained personal access token: Settings › Developer settings › Fine-grained
+   tokens. Resource owner: KassLABs19. Repository access: only `KNTY-CEO-releases`.
+   Permission: **Contents: Read and write**. Choose an expiry and set a reminder to renew it.
+3. In **this** repository: Settings › Secrets and variables › Actions › New repository secret,
+   name `RELEASES_TOKEN`, value the token.
+
+The release workflow stops with a clear message if the secret is missing.
+
+What becomes public: the installer and update files only. The app's code inside the installer
+is bundled and minified but can be inspected, as with any desktop app; never put secrets in
+the desktop app.
 
 ## Building the installer on a Windows PC
 

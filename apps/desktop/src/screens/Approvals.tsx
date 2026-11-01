@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ApiRequestError, formatMoney, type Me, type RequestDetail, type RequestFilter, type RequestSummary } from '@ceo/shared';
 import { api } from '../api';
 import { STATUS, SystemLabel, ageText } from './parts';
+import { ReauthDialog } from './dialogs';
 
 const FILTERS: { id: RequestFilter; label: string }[] = [
   { id: 'mine', label: 'Your step' },
@@ -194,42 +195,5 @@ function Detail({ id, me, onChanged }: { id: string; me: Me; onChanged: () => vo
 
       {reauth && <ReauthDialog name={me.fullName} onCancel={() => setReauth(false)} onConfirmed={(t) => { setReauth(false); void act('approve', t); }} />}
     </section>
-  );
-}
-
-/** Asks for the password again before a sensitive action. */
-export function ReauthDialog({ name, onCancel, onConfirmed }: { name: string; onCancel: () => void; onConfirmed: (token: string) => void }) {
-  const [pw, setPw] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      onConfirmed((await api.reauth(pw)).reauthToken);
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not reach the server.');
-    } finally {
-      setBusy(false);
-      setPw('');
-    }
-  }
-  return (
-    <div className="overlay" onKeyDown={(e) => e.key === 'Escape' && onCancel()}>
-      <form className="card dialog" role="dialog" aria-modal="true" aria-labelledby="ra-h" onSubmit={submit}>
-        <h2 id="ra-h">Confirm it’s you, {name.split(' ')[0]}</h2>
-        <p style={{ margin: 0 }}>This needs your password again.</p>
-        {error && <div className="alert alert-bad" role="alert">{error}</div>}
-        <div className="field">
-          <label htmlFor="ra-pw">Password</label>
-          <input id="ra-pw" className="input" type="password" autoComplete="current-password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
-        </div>
-        <div className="row end">
-          <button type="button" className="btn" onClick={onCancel}>Cancel</button>
-          <button className="btn btn-primary" disabled={!pw || busy}>Confirm</button>
-        </div>
-      </form>
-    </div>
   );
 }

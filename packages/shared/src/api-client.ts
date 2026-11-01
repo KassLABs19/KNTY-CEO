@@ -134,6 +134,11 @@ export class ApiClient {
     return this.raw<T>(path);
   }
 
+  delete<T>(path: string, reauthToken?: string) {
+    const headers: Record<string, string> = reauthToken ? { 'x-reauth-token': reauthToken } : {};
+    return this.raw<T>(path, { method: 'DELETE', headers });
+  }
+
   /** Downloads a file (such as a CSV export) with the signed-in person's token. */
   async download(path: string, retry = true): Promise<Blob> {
     const token = this.store.getAccessToken();

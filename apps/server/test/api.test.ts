@@ -320,3 +320,56 @@ describe('background jobs', () => {
     expect(approvedBySystem.rows[0].n).toBe(0);
   });
 });
+
+describe('logins and owners', () => {
+  const put = (token: string, url: string, payload: unknown, extra: Record<string, string> = {}) =>
+    app.inject({ method: 'PUT', url, payload: payload as object, headers: h(token, extra) });
+  const userId = async (email: string) => (await sys('SELECT id FROM users WHERE email = $1', [email])).rows[0].id as string;
+
+  it('lists people with their login state, and what the HR system changed', async () => {
+    const hana = await signIn('hana@demo.local');
+    const people = (await get(hana, '/api/people')).json();
+    expect(people.find((p: { email: string }) => p.email === 'samuel@demo.local').login).toBe('none');
+    expect(people.find((p: { email: string }) => p.email === 'ruth@demo.local').login).toBe('suspended');
+    const changes = (await get(hana, '/api/people/changes')).json();
+    expect(changes.map((c: { event: string }) => c.event)).toEqual(expect.arrayContaining(['leaver', 'joiner']));
+  });
+
+  it('adds a backup owner only with the password again and two-step sign-in set up', async () => {
+    const hana = await signIn('hana@demo.local');
+    const yonas = await userId('yonas@demo.local');
+    expect((await put(hana, `/api/users/${yonas}/owner`, { owner: true })).json().error).toBe('reauth_required');
+    const rt = await reauth(hana);
+    expect((await put(hana, `/api/users/${yonas}/owner`, { owner: true }, { 'x-reauth-token': rt })).json().error).toBe('needs_two_step');
+    const mekdes = await userId('mekdes@demo.local');
+    expect((await put(hana, `/api/users/${mekdes}/owner`, { owner: true }, { 'x-reauth-token': rt })).statusCode).toBe(204);
+    expect((await put(hana, `/api/users/${await userId('hana@demo.local')}/owner`, { owner: false }, { 'x-reauth-token': rt })).json().error).toBe('self');
+    expect((await put(hana, `/api/users/${mekdes}/owner`, { owner: false }, { 'x-reauth-token': rt })).statusCode).toBe(204);
+  });
+
+  it('stops an owner suspending themselves', async () => {
+    const hana = await signIn('hana@demo.local');
+    const res = await post(hana, `/api/users/${await userId('hana@demo.local')}/suspend`, {});
+    expect(res.json().error).toBe('self');
+  });
+
+  it('cancels an invite so the link stops working, and can invite again', async () => {
+    const hana = await signIn('hana@demo.local');
+    const samuel = (await sys(`SELECT id FROM people WHERE employee_id = 'E-006'`)).rows[0].id;
+    const role = (await sys(`SELECT id FROM roles WHERE key = 'admin' AND company_id = $1`, [companyId])).rows[0].id;
+    const first = (await post(hana, `/api/people/${samuel}/invite`, { roleId: role })).json();
+    const uid = await userId('samuel@demo.local');
+    expect((await app.inject({ method: 'DELETE', url: `/api/users/${uid}/invite`, headers: h(hana) })).statusCode).toBe(204);
+    expect((await app.inject(`/api/invites/${first.inviteToken}`)).statusCode).toBe(404);
+    const people = (await get(hana, '/api/people')).json();
+    expect(people.find((p: { email: string }) => p.email === 'samuel@demo.local').login).toBe('none');
+    const second = (await post(hana, `/api/people/${samuel}/invite`, { roleId: role })).json();
+    expect((await app.inject(`/api/invites/${second.inviteToken}`)).statusCode).toBe(200);
+  });
+
+  it('reactivates only suspended logins, and never a leaver', async () => {
+    const hana = await signIn('hana@demo.local');
+    expect((await post(hana, `/api/users/${await userId('ruth@demo.local')}/reactivate`, {})).json().error).toBe('person_left');
+    expect((await post(hana, `/api/users/${await userId('yonas@demo.local')}/reactivate`, {})).json().error).toBe('not_suspended');
+  });
+});

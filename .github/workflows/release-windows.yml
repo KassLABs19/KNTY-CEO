@@ -1,20 +1,20 @@
 name: Release Windows app
 
-# Push a tag such as v0.2.0 to build the Windows installer and publish it as a
-# GitHub Release. Installed apps pick the update up from there automatically.
+# Push a tag such as v0.2.0 to build the Windows installer and publish it as a release
+# in the public KassLABs19/KNTY-CEO-releases repository. Installed apps pick it up from there.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -24,11 +24,19 @@ jobs:
         run: |
           APP=$(node -p "require('./apps/desktop/package.json').version")
           [ "v$APP" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match apps/desktop version $APP"; exit 1; }
+      - name: Check the releases token is set
+        shell: bash
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          [ -n "$RELEASES_TOKEN" ] || { echo "Add the RELEASES_TOKEN repository secret first (see docs/RELEASING.md)."; exit 1; }
       - run: npm run build -w @ceo/shared
-      - name: Build and publish the installer
+      - name: Build and publish the installer to KNTY-CEO-releases
         run: npm run release:win -w @ceo/desktop
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The built-in GITHUB_TOKEN can only write to this repository, so publishing to
+          # the public releases repository needs its own token.
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           # Optional code signing. Add these repository secrets once you have a certificate.
           CSC_LINK: ${{ secrets.WINDOWS_CERT_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}

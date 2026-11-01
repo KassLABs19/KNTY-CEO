@@ -37,8 +37,10 @@ nsis:
   shortcutName: KNTY CEO
   deleteAppDataOnUninstall: false
 publish:
-  # Updates are served from GitHub Releases. electron-updater checks there on start.
+  # Installers and update files go to a separate PUBLIC repository that holds no source
+  # code, so installed apps can check for updates without a GitHub login while this
+  # repository stays private. See docs/RELEASING.md.
   provider: github
   owner: KassLABs19
-  repo: KNTY-CEO
+  repo: KNTY-CEO-releases
   releaseType: release

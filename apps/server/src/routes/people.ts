@@ -28,14 +28,68 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
     withCompany(db, req.user!.companyId, async (tx) => {
       const rows = (await tx.query<PersonRow>(
         `SELECT p.id, p.employee_id AS "employeeId", p.full_name AS "fullName", p.email, p.department, p.job_title AS "jobTitle",
-                u.role_id AS "roleId", r.name AS "roleName", coalesce(u.status, 'none') AS login, coalesce(u.is_owner, false) AS "isOwner",
-                p.needs_role_review AS "needsRoleReview", p.left_on::text AS "leftOn", coalesce(u.totp_enabled, false) AS "twoStep"
+                u.role_id AS "roleId", r.name AS "roleName", CASE WHEN u.status IS NULL OR u.status = 'removed' THEN 'none' ELSE u.status END AS login, coalesce(u.is_owner, false) AS "isOwner",
+                p.needs_role_review AS "needsRoleReview", p.left_on::text AS "leftOn", coalesce(u.totp_enabled, false) AS "twoStep",
+                u.id AS "userId", u.last_login_at AS "lastSignInAt", (u.locked_at IS NOT NULL) AS locked,
+                (r.requires_2fa OR coalesce(u.is_owner, false)) AS "twoStepRequired",
+                (SELECT max(i.expires_at) FROM invites i WHERE i.user_id = u.id AND i.used_at IS NULL) AS "inviteExpiresAt"
            FROM people p LEFT JOIN users u ON u.person_id = p.id LEFT JOIN roles r ON r.id = u.role_id
           ORDER BY (u.id IS NULL), p.full_name`,
       )).rows;
       return rows;
     }),
   );
+
+  // What the HR system changed recently: joiners, movers and leavers, newest first.
+  app.get('/api/people/changes', { preHandler: owners }, async (req) =>
+    withCompany(db, req.user!.companyId, async (tx) =>
+      (await tx.query(
+        `SELECT a.id, a.created_at AS "at", replace(a.action, 'people.', '') AS event, a.detail->>'name' AS name, a.target_id AS "employeeId",
+                p.department, p.job_title AS "jobTitle", p.needs_role_review AS "needsRoleReview", p.left_on::text AS "leftOn",
+                u.status AS login
+           FROM audit_log a LEFT JOIN people p ON p.employee_id = a.target_id LEFT JOIN users u ON u.person_id = p.id
+          WHERE a.action IN ('people.joiner', 'people.mover', 'people.leaver') AND a.created_at > now() - interval '14 days'
+          ORDER BY a.id DESC LIMIT 20`,
+      )).rows,
+    ),
+  );
+
+  // Make someone a backup owner, or stop them being one. There must always be an active owner.
+  app.put('/api/users/:id/owner', { preHandler: owners }, async (req, reply) => {
+    const { id: userId } = id.parse(req.params);
+    const body = z.object({ owner: z.boolean() }).safeParse(req.body);
+    if (!body.success) throw new AppError(400, 'invalid_request', 'Say whether they should be an owner.');
+    const u = req.user!;
+    await needReauth(req, 'change who the account owners are');
+    return withCompany(db, u.companyId, async (tx) => {
+      const t = (await tx.query<{ status: string; is_owner: boolean; totp_enabled: boolean }>('SELECT status, is_owner, totp_enabled FROM users WHERE id = $1 FOR UPDATE', [userId])).rows[0];
+      if (!t) throw new AppError(404, 'not_found', 'No such login.');
+      if (body.data.owner) {
+        if (t.status !== 'active') throw new AppError(400, 'inactive', 'Only someone with an active login can be an owner.');
+        if (!t.totp_enabled) throw new AppError(400, 'needs_two_step', 'They must set up two-step sign-in first. Ask them to sign in once with a role that requires it.');
+      } else {
+        if (userId === u.id) throw new AppError(400, 'self', 'You can’t remove yourself as an owner. Another owner must do it.');
+        if (t.is_owner && (await activeOwners(tx)) <= 1) throw new AppError(400, 'last_owner', 'The company needs at least one active owner.');
+      }
+      await tx.query('UPDATE users SET is_owner = $2 WHERE id = $1', [userId, body.data.owner]);
+      await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: body.data.owner ? 'logins.owner_added' : 'logins.owner_removed', category: 'access', targetType: 'user', targetId: userId, ip: req.ip });
+      return reply.status(204).send();
+    });
+  });
+
+  // Cancel an invite that hasn't been accepted: the link stops working and the login is removed.
+  app.delete('/api/users/:id/invite', { preHandler: owners }, async (req, reply) => {
+    const { id: userId } = id.parse(req.params);
+    const u = req.user!;
+    return withCompany(db, u.companyId, async (tx) => {
+      const t = (await tx.query<{ status: string }>('SELECT status FROM users WHERE id = $1 FOR UPDATE', [userId])).rows[0];
+      if (!t || t.status !== 'invited') throw new AppError(404, 'not_found', 'No open invite for that person.');
+      await tx.query('UPDATE invites SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
+      await tx.query(`UPDATE users SET status = 'removed', is_owner = false WHERE id = $1`, [userId]);
+      await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.invite_cancelled', category: 'logins', targetType: 'user', targetId: userId, ip: req.ip });
+      return reply.status(204).send();
+    });
+  });
 
   // Only people the HR system knows about, who haven't left, can be invited.
   app.post('/api/people/:id/invite', { preHandler: owners }, async (req) => {
@@ -51,9 +105,13 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       const role = (await tx.query('SELECT id FROM roles WHERE id = $1', [body.data.roleId])).rows[0];
       if (!role) throw new AppError(400, 'invalid_role', 'That role doesn’t exist.');
       const existing = (await tx.query<{ id: string; status: string }>('SELECT id, status FROM users WHERE person_id = $1', [personId])).rows[0];
-      if (existing && existing.status !== 'invited') throw new AppError(409, 'has_login', `${person.full_name} already has a login.`);
+      if (existing && !['invited', 'removed'].includes(existing.status)) throw new AppError(409, 'has_login', `${person.full_name} already has a login.`);
       const userId = existing
-        ? (await tx.query<{ id: string }>('UPDATE users SET role_id = $2, is_owner = $3 WHERE id = $1 RETURNING id', [existing.id, body.data.roleId, body.data.owner])).rows[0]!.id
+        ? (await tx.query<{ id: string }>(
+            `UPDATE users SET role_id = $2, is_owner = $3, status = 'invited', password_hash = NULL, totp_secret = NULL, totp_enabled = false, failed_attempts = 0, locked_at = NULL
+              WHERE id = $1 RETURNING id`,
+            [existing.id, body.data.roleId, body.data.owner],
+          )).rows[0]!.id
         : (await tx.query<{ id: string }>(
             `INSERT INTO users (company_id, person_id, email, role_id, is_owner, status) VALUES ($1, $2, $3, $4, $5, 'invited') RETURNING id`,
             [u.companyId, personId, person.email, body.data.roleId, body.data.owner],
@@ -94,7 +152,8 @@ export function registerPeopleRoutes(app: FastifyInstance, db: Db, config: Confi
       )).rows[0];
       if (!t) throw new AppError(404, 'not_found', 'No such login.');
       if (t.left_on) throw new AppError(400, 'person_left', 'This person has left the company. The HR system must record a rehire first.');
-      await tx.query(`UPDATE users SET status = CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END, locked_at = NULL, failed_attempts = 0 WHERE id = $1`, [userId]);
+      const res = await tx.query(`UPDATE users SET status = CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END, locked_at = NULL, failed_attempts = 0 WHERE id = $1 AND status = 'suspended'`, [userId]);
+      if (res.rowCount === 0) throw new AppError(400, 'not_suspended', 'Only a suspended login can be reactivated.');
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'logins.reactivated', category: 'logins', targetType: 'user', targetId: userId, ip: req.ip });
       return reply.status(204).send();
     });

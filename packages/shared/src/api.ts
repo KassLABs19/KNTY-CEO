@@ -129,6 +129,11 @@ export interface SystemStatus {
 
 export interface PersonRow {
   id: string;
+  userId: string | null;
+  lastSignInAt: string | null;
+  locked: boolean;
+  twoStepRequired: boolean | null;
+  inviteExpiresAt: string | null;
   employeeId: string;
   fullName: string;
   email: string;
@@ -141,6 +146,34 @@ export interface PersonRow {
   needsRoleReview: boolean;
   leftOn: string | null;
   twoStep: boolean;
+}
+
+export interface PeopleChange {
+  id: number;
+  at: string;
+  event: 'joiner' | 'mover' | 'leaver';
+  name: string;
+  employeeId: string;
+  department: string | null;
+  jobTitle: string | null;
+  needsRoleReview: boolean | null;
+  leftOn: string | null;
+  login: 'invited' | 'active' | 'suspended' | 'removed' | null;
+}
+
+export interface RoleSummary {
+  id: string;
+  key: string | null;
+  name: string;
+  scope: string;
+  requires2fa: boolean;
+  members: number;
+}
+
+export interface InviteCreated {
+  inviteToken: string;
+  inviteLink: string;
+  expiresAt: string;
 }
 
 export interface SettingsData {
