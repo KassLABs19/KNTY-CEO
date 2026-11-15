@@ -1,0 +1,6 @@
+# Graphify working files (machine-specific / regenerable)
+cache/
+manifest.json
+.graphify_root
+.graphify_build.json
+.graphify_analysis.json
