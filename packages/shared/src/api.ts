@@ -1,4 +1,4 @@
-import type { Decision, PartnerSystem, RequestKind, RequestStatus, StepState, ApprovalRules } from './approvals.js';
+import type { Decision, RequestStatus, StepState, ApprovalRules, RequestTypeConfig } from './approvals.js';
 import type { Money } from './money.js';
 import type { Levels, RoleKey, Scope } from './roles.js';
 
@@ -65,8 +65,9 @@ export interface InviteInfo {
 export interface RequestSummary {
   id: string;
   ref: string;
-  system: PartnerSystem;
-  kind: RequestKind;
+  /** The request type's key and name, for example payroll · Payroll run. */
+  kind: string;
+  typeName: string;
   title: string;
   subtitle: string;
   money: Money | null;
@@ -83,7 +84,8 @@ export interface RequestSummary {
 
 export interface ChainStepView {
   label: string;
-  owner: 'partner' | 'console';
+  /** Run in the HR system before the hand-off, or by the Control Center after it. */
+  owner: 'hr' | 'console';
   state: StepState;
   decidedBy: string | null;
   onBehalfOf: string | null;
@@ -114,11 +116,10 @@ export interface OverviewData {
   counts: { waitingOnYou: number; overdue: number; openTotal: number; decidedThisWeek: number };
   /** Pending money per currency; never converted. */
   pendingByCurrency: Money[];
-  systems: SystemStatus[];
+  hr: SystemStatus;
 }
 
 export interface SystemStatus {
-  system: PartnerSystem;
   name: string;
   connected: boolean;
   lastMessageAt: string | null;
@@ -178,7 +179,9 @@ export interface InviteCreated {
 
 export interface SettingsData {
   rules: ApprovalRules;
+  requestTypes: RequestTypeConfig[];
+  hrAddress: string | null;
   locale: { numberLocale: string; dateStyle: 'medium' | 'short' | 'iso'; timeZone: string };
 }
 
-export type { ApprovalRules };
+export type { ApprovalRules, RequestTypeConfig };

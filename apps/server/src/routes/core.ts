@@ -2,14 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CONTRACT_VERSION,
-  DEFAULT_RULES,
-  REQUEST_KINDS,
+  MODULES,
   isVersionSupported,
   totalsByCurrency,
+  validateRequestType,
   validateRules,
   type Me,
   type OverviewData,
   type SettingsData,
+  type RequestTypeConfig,
   type SystemStatus,
   type VersionInfo,
 } from '@ceo/shared';
@@ -21,15 +22,27 @@ import { reauthValid } from '../auth/tokens.js';
 import { canSee, loadRules, loadSteps, type RequestRow } from '../approvals.js';
 import { AppError } from '../errors.js';
 import { summarize } from '../views.js';
+import { listTypes, loadType, saveType, typeCache } from '../request-types.js';
 import type { LicenceState } from '../licence.js';
 
 const rulesBody = z.object({
-  refundOpsLimitMinor: z.number().int().nonnegative().nullable(),
-  refundCfoLimitMinor: z.number().int().nonnegative().nullable(),
-  deptHeadLeaveToCeo: z.boolean(),
   remindAfterHours: z.number().int().min(1).max(720),
   escalateAfterHours: z.number().int().min(2).max(1440),
-  reauthFor: z.array(z.enum(REQUEST_KINDS)).refine((k) => k.includes('payroll'), 'Payroll always needs the password again.'),
+});
+
+const requestTypeBody = z.object({
+  name: z.string().trim().min(1).max(80),
+  module: z.enum(MODULES),
+  active: z.boolean(),
+  steps: z.array(z.object({
+    roleId: z.string().uuid(),
+    label: z.string().trim().min(1).max(80),
+    aboveMinor: z.number().int().nonnegative().nullable(),
+  })).max(8),
+  reauth: z.boolean(),
+  delegable: z.boolean(),
+  bulkAllowed: z.boolean(),
+  lockWhenApproved: z.boolean(),
 });
 
 /** Quotes a CSV cell, and stops spreadsheet apps from running text that starts like a formula. */
@@ -83,36 +96,36 @@ export function registerCoreRoutes(app: FastifyInstance, db: Db, config: Config,
     const u = req.user!;
     return withCompany(db, u.companyId, async (tx) => {
       const rules = await loadRules(tx);
+      const types = typeCache(tx);
       const open = (await tx.query<RequestRow>(`SELECT * FROM requests WHERE status = 'pending' ORDER BY step_started_at LIMIT 500`)).rows;
       const visible = [];
       for (const r of open) {
         const steps = await loadSteps(tx, r.id);
-        if (await canSee(tx, u, r, steps)) visible.push(await summarize(tx, u, r, steps, rules.remindAfterHours));
+        if (await canSee(tx, u, r, steps)) visible.push(await summarize(tx, u, r, steps, rules.remindAfterHours, await types(r.kind)));
       }
       const decidedThisWeek = (await tx.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM request_steps WHERE decided_by = $1 AND decided_at > now() - interval '7 days'`,
         [u.id],
       )).rows[0]!.n;
-      const partners = (await tx.query<{ system: 'hr' | 'predicto'; name: string; base_url: string | null; last_message_at: Date | null; contract_version: string | null; waiting: number; oldest: number | null }>(
-        `SELECT p.system, p.name, p.base_url, p.last_message_at, p.contract_version,
-                (SELECT count(*)::int FROM outbox o WHERE o.system = p.system AND o.delivered_at IS NULL) AS waiting,
-                (SELECT floor(extract(epoch FROM now() - min(o.created_at)) / 60)::int FROM outbox o WHERE o.system = p.system AND o.delivered_at IS NULL) AS oldest
-           FROM partners p ORDER BY p.system`,
-      )).rows;
-      const systems: SystemStatus[] = partners.map((p) => ({
-        system: p.system,
-        name: p.name,
-        connected: Boolean(p.base_url),
-        lastMessageAt: p.last_message_at?.toISOString() ?? null,
-        outboxWaiting: p.waiting,
-        oldestWaitingMinutes: p.oldest,
-        contractVersion: p.contract_version,
-      }));
+      const p = (await tx.query<{ name: string; base_url: string | null; last_message_at: Date | null; contract_version: string | null }>(
+        `SELECT name, base_url, last_message_at, contract_version FROM partners WHERE system = 'hr'`,
+      )).rows[0];
+      const box = (await tx.query<{ waiting: number; oldest: number | null }>(
+        `SELECT count(*)::int AS waiting, floor(extract(epoch FROM now() - min(created_at)) / 60)::int AS oldest FROM outbox WHERE delivered_at IS NULL`,
+      )).rows[0]!;
+      const hr: SystemStatus = {
+        name: p?.name ?? 'HR system',
+        connected: Boolean(p?.base_url),
+        lastMessageAt: p?.last_message_at?.toISOString() ?? null,
+        outboxWaiting: box.waiting,
+        oldestWaitingMinutes: box.oldest,
+        contractVersion: p?.contract_version ?? null,
+      };
       const data: OverviewData = {
         waiting: visible.filter((s) => s.yourTurn).slice(0, 8),
         counts: { waitingOnYou: visible.filter((s) => s.yourTurn).length, overdue: visible.filter((s) => s.overdue).length, openTotal: visible.length, decidedThisWeek },
         pendingByCurrency: totalsByCurrency(visible.flatMap((s) => (s.money ? [s.money] : []))),
-        systems,
+        hr,
       };
       return data;
     });
@@ -148,7 +161,16 @@ export function registerCoreRoutes(app: FastifyInstance, db: Db, config: Config,
   app.get('/api/settings', { preHandler: auth() }, async (req) =>
     withCompany(db, req.user!.companyId, async (tx) => {
       const row = (await tx.query<{ locale: SettingsData['locale'] }>('SELECT locale FROM settings')).rows[0];
-      const data: SettingsData = { rules: await loadRules(tx), locale: row?.locale ?? { numberLocale: 'en-GB', dateStyle: 'medium', timeZone: 'UTC' } };
+      // The HR address is for owners only; everyone gets the type names to label requests.
+      const hrAddress = req.user!.isOwner
+        ? (await tx.query<{ base_url: string | null }>(`SELECT base_url FROM partners WHERE system = 'hr'`)).rows[0]?.base_url ?? null
+        : null;
+      const data: SettingsData = {
+        rules: await loadRules(tx),
+        requestTypes: await listTypes(tx),
+        hrAddress,
+        locale: row?.locale ?? { numberLocale: 'en-GB', dateStyle: 'medium', timeZone: 'UTC' },
+      };
       return data;
     }),
   );
@@ -171,21 +193,46 @@ export function registerCoreRoutes(app: FastifyInstance, db: Db, config: Config,
         [u.companyId, JSON.stringify(parsed.data), u.id],
       );
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'settings.rules_changed', category: 'settings', ip: req.ip, detail: { before, after: parsed.data } });
-      return { ...DEFAULT_RULES, ...parsed.data };
+      return parsed.data;
     });
   });
 
-  // Where to deliver decisions for each partner system. Owners only, password again.
-  app.put('/api/partners/:system', { preHandler: auth({ module: 'settings' }) }, async (req) => {
+  // Add or change a request type: its steps, amount thresholds and rules. Owners only, password again.
+  // Requests already waiting keep the steps they started with; the change applies to new ones and new versions.
+  app.put('/api/request-types/:key', { preHandler: auth({ module: 'settings' }) }, async (req) => {
     const u = req.user!;
     if (!(await reauthValid(req.headers['x-reauth-token'] as string | undefined, u.id, u.sessionId, config.JWT_SECRET))) {
-      throw new AppError(401, 'reauth_required', 'Enter your password again to change a partner address.');
+      throw new AppError(401, 'reauth_required', 'Enter your password again to change a request type.');
     }
-    const { system } = z.object({ system: z.enum(['hr', 'predicto']) }).parse(req.params);
+    const { key } = z.object({ key: z.string().max(40) }).parse(req.params);
+    const parsed = requestTypeBody.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'invalid_request_type', parsed.error.issues[0]?.message ?? 'This request type is not valid.');
+    const next: RequestTypeConfig = { key, ...parsed.data };
+    return withCompany(db, u.companyId, async (tx) => {
+      const roleIds = (await tx.query<{ id: string }>('SELECT id FROM roles')).rows.map((r) => r.id);
+      const problem = validateRequestType(next, roleIds);
+      if (problem) throw new AppError(400, 'invalid_request_type', problem);
+      const before = await loadType(tx, key);
+      await saveType(tx, u.companyId, next, u.id);
+      await audit(tx, {
+        companyId: u.companyId, actorUserId: u.id, action: before ? 'settings.request_type_changed' : 'settings.request_type_added',
+        category: 'settings', targetType: 'request_type', targetId: key, ip: req.ip, detail: { before, after: next },
+      });
+      return next;
+    });
+  });
+
+  // Where to deliver decisions for the HR system. Owners only, password again.
+  app.put('/api/partners/hr', { preHandler: auth({ module: 'settings' }) }, async (req) => {
+    const u = req.user!;
+    if (!(await reauthValid(req.headers['x-reauth-token'] as string | undefined, u.id, u.sessionId, config.JWT_SECRET))) {
+      throw new AppError(401, 'reauth_required', 'Enter your password again to change the HR system address.');
+    }
+    const system = 'hr';
     const body = z.object({ baseUrl: z.string().url().max(300) }).safeParse(req.body);
     if (!body.success) throw new AppError(400, 'invalid_url', 'Enter the full address, starting with https://');
     const url = new URL(body.data.baseUrl);
-    if (url.protocol !== 'https:' && config.APP_ENV === 'production') throw new AppError(400, 'https_required', 'Partner addresses must use https:// in production.');
+    if (url.protocol !== 'https:' && config.APP_ENV === 'production') throw new AppError(400, 'https_required', 'The HR system address must use https:// in production.');
     return withCompany(db, u.companyId, async (tx) => {
       await tx.query('UPDATE partners SET base_url = $2 WHERE system = $1', [system, url.origin + url.pathname.replace(/\/+$/, '')]);
       await audit(tx, { companyId: u.companyId, actorUserId: u.id, action: 'settings.partner_address', category: 'settings', targetType: 'partner', targetId: system, ip: req.ip, detail: { baseUrl: url.origin } });

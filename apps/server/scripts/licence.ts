@@ -6,7 +6,7 @@
  *       Put the printed public key into LICENCE_PUBLIC_KEY on customer servers.
  *
  *   npm run licence:sign -w @ceo/server -- --customer "Acme Ltd" --edition business \
- *       --modules approvals,people,predicto --max 250 --expires 2027-12-31 --out licence.json
+ *       --modules approvals,people,payroll --max 250 --expires 2027-12-31 --out licence.json
  *       Signs a licence with licence-private.pem. Send licence.json to the customer.
  */
 import { generateKeyPairSync, createPrivateKey, sign } from 'node:crypto';

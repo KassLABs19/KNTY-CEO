@@ -14,7 +14,7 @@ declare module 'fastify' {
 }
 
 /**
- * The one door partner systems use: POST /api/integration/inbound with headers
+ * The one door the HR system uses: POST /api/integration/inbound with headers
  * `x-cc-partner: <partner id>` and `x-cc-signature`. Messages are checked, de-duplicated
  * by messageId and applied in one transaction, so a retried message never acts twice.
  */
@@ -34,7 +34,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance, db: Db) {
       const partnerId = z.string().uuid().safeParse(req.headers['x-cc-partner']);
       if (!partnerId.success) return reply.status(401).send({ error: 'unknown_partner', message: 'Missing or unknown x-cc-partner.' });
       const partner = await withSystem(db, async (tx) =>
-        (await tx.query<{ id: string; company_id: string; system: 'hr' | 'predicto'; inbound_secret: string }>(
+        (await tx.query<{ id: string; company_id: string; system: 'hr'; inbound_secret: string }>(
           'SELECT id, company_id, system, inbound_secret FROM partners WHERE id = $1',
           [partnerId.data],
         )).rows[0],
@@ -53,7 +53,6 @@ export async function registerIntegrationRoutes(app: FastifyInstance, db: Db) {
       if (!ACCEPTED_MAJORS.includes(contractMajor(msg.contractVersion))) {
         return reply.status(400).send({ error: 'contract_version', message: `Contract ${msg.contractVersion} is not accepted. Supported majors: ${ACCEPTED_MAJORS.join(', ')}.` });
       }
-      if (msg.type === 'people.event' && msg.system !== 'hr') return reply.status(400).send({ error: 'wrong_system', message: 'Only the HR system sends people events.' });
 
       return withCompany(db, partner.company_id, async (tx) => {
         const fresh = await tx.query('INSERT INTO inbox (company_id, system, message_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [
@@ -62,10 +61,9 @@ export async function registerIntegrationRoutes(app: FastifyInstance, db: Db) {
         await tx.query('UPDATE partners SET last_message_at = now(), contract_version = $2 WHERE id = $1', [partner.id, msg.contractVersion]);
         if (fresh.rowCount === 0) return { status: 'duplicate' };
         if (msg.type === 'request.upsert') {
-          const res = await upsertRequest(tx, partner.company_id, msg);
-          // Throwing rolls the inbox row back too, so the partner can resend once the rules change.
-          if (res.status === 'not_routed') throw new AppError(422, 'not_routed', 'This kind of request has no Control Center steps under the current rules.');
-          return res;
+          // A request type that isn't set up throws, which rolls the inbox row back too,
+          // so the HR system can resend once an owner sets it up.
+          return upsertRequest(tx, partner.company_id, msg);
         }
         if (msg.type === 'request.cancel') return { status: await cancelRequest(tx, partner.company_id, msg) };
         await applyPeopleEvent(tx, partner.company_id, msg);

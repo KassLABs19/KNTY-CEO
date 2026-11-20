@@ -27,7 +27,7 @@ export interface TokenStore {
   clear(): void | Promise<void>;
 }
 
-export type RequestFilter = 'mine' | 'all' | 'hr' | 'predicto' | 'decided';
+export type RequestFilter = 'mine' | 'all' | 'decided';
 
 /**
  * Small API client for the desktop app. It refreshes the access token once when the

@@ -1,7 +1,8 @@
 /**
  * Roles and access for the Control Center.
  *
- * Access is a matrix: for each module a role has a level (none, view, approve, manage).
+ * Access is a matrix: for each area a role has a level (none, view, approve, manage).
+ * Areas are either the Control Center's own or come from the connected HR system.
  * Which people and requests a role sees is set by its `scope`. The CEO assigns roles.
  *
  * Three modules are for account owners only (the CEO and a backup owner): logins,
@@ -21,18 +22,14 @@ export const MODULES = [
   'people',
   'leave',
   'payroll',
-  // From Predicto
-  'predicto',
-  'refunds',
 ] as const;
 export type Module = (typeof MODULES)[number];
 
 export const OWNERS_ONLY_MODULES: readonly Module[] = ['settings', 'logins', 'access'];
 
-export const MODULE_GROUPS: { system: 'cc' | 'hr' | 'predicto'; label: string; modules: Module[] }[] = [
+export const MODULE_GROUPS: { system: 'cc' | 'hr'; label: string; modules: Module[] }[] = [
   { system: 'cc', label: 'Control Center', modules: ['overview', 'approvals', 'finance', 'audit', 'settings', 'logins', 'access'] },
   { system: 'hr', label: 'HR system', modules: ['people', 'leave', 'payroll'] },
-  { system: 'predicto', label: 'Predicto', modules: ['predicto', 'refunds'] },
 ];
 
 /** 0 none · 1 view · 2 approve (at their step) · 3 manage */
@@ -62,7 +59,7 @@ export const SYSTEM_ROLES: RoleDefinition[] = [
   { key: 'ceo', name: 'CEO', scope: 'company', requires2fa: true, levels: every(3) },
   {
     key: 'cfo', name: 'CFO', scope: 'company', requires2fa: true,
-    levels: { overview: 1, approvals: 2, finance: 3, audit: 1, people: 1, payroll: 2, predicto: 1, refunds: 2 },
+    levels: { overview: 1, approvals: 2, finance: 3, audit: 1, people: 1, payroll: 2 },
   },
   {
     key: 'hr_head', name: 'Head of HR', scope: 'company', requires2fa: false,
@@ -70,7 +67,7 @@ export const SYSTEM_ROLES: RoleDefinition[] = [
   },
   {
     key: 'ops_head', name: 'Head of Operations', scope: 'company', requires2fa: false,
-    levels: { overview: 1, approvals: 2, people: 1, predicto: 3, refunds: 2 },
+    levels: { overview: 1, approvals: 2, finance: 1, people: 1 },
   },
   {
     key: 'dept_head', name: 'Department head', scope: 'department', requires2fa: false,
@@ -78,7 +75,7 @@ export const SYSTEM_ROLES: RoleDefinition[] = [
   },
   {
     key: 'admin', name: 'Admin', scope: 'company', requires2fa: false,
-    levels: { overview: 1, approvals: 2, leave: 1, predicto: 2 },
+    levels: { overview: 1, approvals: 2, leave: 1 },
   },
 ];
 

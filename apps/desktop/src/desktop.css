@@ -131,3 +131,11 @@ table.people tr.row-actions select { min-width: 200px; }
 .two > .card { gap: 12px; }
 .btn { white-space: nowrap; }
 .change .btn { flex: 0 0 auto; }
+
+/* Settings › Request types */
+.dialog.wide { max-width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; }
+.step-edit { display: grid; grid-template-columns: 20px 180px minmax(120px, 1fr) 130px 44px 44px 44px; gap: 8px; align-items: center; }
+.step-edit .input { width: 100%; min-width: 0; }
+.toggle-line { min-height: 44px; }
+.req-row .sys-label { flex: 0 0 168px; max-width: 168px; justify-content: flex-start; }
+.ellip { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }

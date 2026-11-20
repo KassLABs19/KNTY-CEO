@@ -4,8 +4,8 @@
  *
  *   npm run db:seed
  *
- * Every demo account uses DEMO_PASSWORD. Requests are loaded through the same code a
- * partner message uses, so the demo follows the real rules.
+ * Every demo account uses DEMO_PASSWORD. Requests are loaded through the same code an
+ * HR system message uses, so the demo follows the real request types.
  */
 import { randomUUID } from 'node:crypto';
 import { CONTRACT_VERSION, DEFAULT_RULES, SYSTEM_ROLES, type RequestMessage, type RoleKey } from '@ceo/shared';
@@ -13,15 +13,13 @@ import type { Db, Tx } from './db.js';
 import { withCompany, withSystem } from './db.js';
 import { hashPassword } from './auth/password.js';
 import { decide, upsertRequest } from './approvals.js';
+import { saveType, seedDefaultTypes } from './request-types.js';
 import type { CurrentUser } from './guard.js';
 
 export const DEMO_COMPANY = 'Demo Company';
 export const DEMO_PASSWORD = 'demo-password-2026';
-/** Fixed only so the demo partner simulator can sign messages. Real partners get random secrets. */
-export const DEMO_PARTNER_SECRETS = {
-  hr: { inbound: 'demo-hr-to-ceo-secret-change-me-000000', outbound: 'demo-ceo-to-hr-secret-change-me-000000' },
-  predicto: { inbound: 'demo-predicto-to-ceo-secret-change-me-00', outbound: 'demo-ceo-to-predicto-secret-change-me-00' },
-} as const;
+/** Fixed only so the demo HR simulator can sign messages. A real company gets random secrets. */
+export const DEMO_HR_SECRETS = { inbound: 'demo-hr-to-ceo-secret-change-me-000000', outbound: 'demo-ceo-to-hr-secret-change-me-000000' } as const;
 
 export const DEMO_PEOPLE: { employeeId: string; email: string; name: string; dept: string; title: string; role?: RoleKey; owner?: boolean }[] = [
   { employeeId: 'E-001', email: 'hana@demo.local', name: 'Hana Tesfaye', dept: 'Executive', title: 'Chief Executive Officer', role: 'ceo', owner: true },
@@ -33,9 +31,9 @@ export const DEMO_PEOPLE: { employeeId: string; email: string; name: string; dep
   { employeeId: 'E-007', email: 'meron@demo.local', name: 'Meron Alemu', dept: 'Finance', title: 'Finance Manager' },
 ];
 
-const msg = (system: 'hr' | 'predicto', request: Partial<RequestMessage['request']> & Pick<RequestMessage['request'], 'externalId' | 'kind' | 'title'>): RequestMessage => ({
+const msg = (request: Partial<RequestMessage['request']> & Pick<RequestMessage['request'], 'externalId' | 'kind' | 'title'>): RequestMessage => ({
   messageId: randomUUID(),
-  system,
+  system: 'hr',
   contractVersion: CONTRACT_VERSION,
   sentAt: new Date().toISOString(),
   traceId: randomUUID().slice(0, 8),
@@ -80,12 +78,21 @@ export async function seed(db: Db, log: (m: string) => void = console.log): Prom
       )).rows[0]!.id);
     }
     await tx.query('INSERT INTO settings (company_id, rules) VALUES ($1, $2)', [id, JSON.stringify(DEFAULT_RULES)]);
-    for (const [system, name] of [['hr', 'HR system'], ['predicto', 'Predicto']] as const) {
-      await tx.query(
-        'INSERT INTO partners (company_id, system, name, base_url, inbound_secret, outbound_secret) VALUES ($1, $2, $3, NULL, $4, $5)',
-        [id, system, name, DEMO_PARTNER_SECRETS[system].inbound, DEMO_PARTNER_SECRETS[system].outbound],
-      );
-    }
+    await tx.query(
+      `INSERT INTO partners (company_id, system, name, base_url, inbound_secret, outbound_secret) VALUES ($1, 'hr', 'HR system', NULL, $2, $3)`,
+      [id, DEMO_HR_SECRETS.inbound, DEMO_HR_SECRETS.outbound],
+    );
+    await seedDefaultTypes(tx, id);
+    // A request type an owner added in Settings, to show thresholds and bulk approval:
+    // the Head of Operations decides every petty-cash payout; the CFO also signs above ETB 5,000.
+    await saveType(tx, id, {
+      key: 'petty_cash', name: 'Petty cash payout', module: 'finance', active: true,
+      steps: [
+        { roleId: roleIds.get('ops_head')!, label: 'Head of Operations', aboveMinor: null },
+        { roleId: roleIds.get('cfo')!, label: 'CFO · above ETB 5,000', aboveMinor: 500_000 },
+      ],
+      reauth: false, delegable: true, bulkAllowed: true, lockWhenApproved: false,
+    }, null);
     const hash = await hashPassword(DEMO_PASSWORD);
     for (const p of DEMO_PEOPLE) {
       const personId = (await tx.query<{ id: string }>(
@@ -113,7 +120,7 @@ export async function seed(db: Db, log: (m: string) => void = console.log): Prom
     const hana = await asUser(tx, 'hana@demo.local');
     await tx.query('INSERT INTO delegations (company_id, from_user_id, to_user_id, ends_at, created_by) VALUES ($1, $2, $3, now() + interval \'7 days\', $2)', [companyId, liya.id, hana.id]);
 
-    await upsertRequest(tx, companyId, msg('hr', {
+    await upsertRequest(tx, companyId, msg({
       externalId: 'PAY-2026-10', kind: 'payroll', title: 'Payroll run · October', subtitle: 'Prepared by the HR officer',
       money: { amountMinor: 61_200_000, currency: 'ETB' },
       facts: [{ label: 'Employees', value: '46' }, { label: 'Change vs September', value: '+ETB 38,500' }, { label: 'Pay date', value: '31 Oct 2026' }],
@@ -124,35 +131,31 @@ export async function seed(db: Db, log: (m: string) => void = console.log): Prom
     const payroll = (await tx.query<{ id: string; version: number }>(`SELECT id, version FROM requests WHERE external_id = 'PAY-2026-10'`)).rows[0]!;
     await decide(tx, await asUser(tx, 'mekdes@demo.local'), payroll.id, { decision: 'approve', version: payroll.version, reauthOk: true });
 
-    await upsertRequest(tx, companyId, msg('hr', {
+    await upsertRequest(tx, companyId, msg({
       externalId: 'LV-3381', kind: 'leave', title: 'Leave request · 5 days', subtitle: 'Ruth Kebede · Head of Sales', requesterEmployeeId: 'E-005', department: 'Sales',
       facts: [{ label: 'Dates', value: '3–7 Nov 2026' }, { label: 'Type', value: 'Annual leave' }, { label: 'Balance after', value: '9 days' }],
       partnerSteps: [{ label: 'Approved', by: 'Head of HR', at: at(3) }],
     }));
-    await upsertRequest(tx, companyId, msg('hr', {
+    await upsertRequest(tx, companyId, msg({
       externalId: 'EXP-0912', kind: 'expense', title: 'Expense claim · conference travel', subtitle: 'Mekdes Bekele · CFO', requesterEmployeeId: 'E-002', department: 'Finance',
       money: { amountMinor: 1_850_000, currency: 'ETB' },
       facts: [{ label: 'Purpose', value: 'Industry conference' }, { label: 'Receipts', value: '4 attached' }],
       partnerSteps: [{ label: 'Receipts checked', by: 'Finance', at: at(1) }],
     }));
-    await upsertRequest(tx, companyId, msg('hr', {
+    await upsertRequest(tx, companyId, msg({
       externalId: 'HIRE-0044', kind: 'hire', title: 'New hire · Junior developer', subtitle: 'Engineering', department: 'Engineering',
       facts: [{ label: 'Position', value: 'Budgeted, Q4' }, { label: 'Start date', value: '17 Nov 2026' }],
       masked: [{ field: 'salary', ref: 'offer/0044' }],
       partnerSteps: [{ label: 'Approved', by: 'Department head', at: at(30) }, { label: 'Approved', by: 'Head of HR', at: at(26) }],
     }));
-    await upsertRequest(tx, companyId, msg('predicto', {
-      externalId: 'RF-2201', kind: 'refund', title: 'Refund request', subtitle: 'Player · Abel T.',
-      money: { amountMinor: 45_000, currency: 'ETB' },
-      facts: [{ label: 'Tier', value: 'Quarter (W2)' }, { label: 'First deadline', value: 'Sat 1 Nov, 15:00' }],
-      partnerSteps: [{ label: 'Before first deadline', by: 'Predicto rule check', at: at(2) }],
-    }));
-    for (const [n, player, amount, method] of [[1, 'Hana M.', 30_000, 'Telebirr'], [2, 'Dawit K.', 90_000, 'CBE transfer'], [3, 'Tsion A.', 30_000, 'Telebirr']] as const) {
-      await upsertRequest(tx, companyId, msg('predicto', {
-        externalId: `MP-77${n}`, kind: 'manual_payment', title: `Manual payment · ${method}`, subtitle: `Player · ${player}`,
+    // Petty cash already checked by the HR system: small ones go to the Head of Operations only
+    // (who is away, so the CEO sees them as a delegate); the large one also needs the CFO.
+    for (const [n, who, amount, purpose] of [[1, 'Samuel Desta', 120_000, 'Team lunch'], [2, 'Meron Alemu', 85_000, 'Office supplies'], [3, 'Samuel Desta', 640_000, 'Hardware repair']] as const) {
+      await upsertRequest(tx, companyId, msg({
+        externalId: `PC-50${n}`, kind: 'petty_cash', title: `Petty cash · ${purpose}`, subtitle: who,
         money: { amountMinor: amount, currency: 'ETB' }, bulkEligible: true,
-        facts: [{ label: 'Reference', value: 'Format valid' }, { label: 'Payer phone', value: 'Verified' }, { label: 'Receipt', value: 'Screenshot attached' }],
-        partnerSteps: [{ label: 'Reference and phone checked', by: 'Predicto', at: at(4 + n) }],
+        facts: [{ label: 'Receipt', value: 'Attached' }, { label: 'Budget line', value: 'Within limit' }],
+        partnerSteps: [{ label: 'Receipt checked', by: 'HR officer', at: at(4 + n) }],
       }));
     }
   });

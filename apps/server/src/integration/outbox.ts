@@ -69,7 +69,7 @@ export async function alertStuck(db: Db): Promise<number> {
       [ALERT_AFTER_HOURS],
     )).rows;
     for (const s of stuck) {
-      const name = s.system === 'hr' ? 'the HR system' : 'Predicto';
+      const name = 'the HR system';
       await tx.query(
         `INSERT INTO notifications (company_id, user_id, kind, text)
          SELECT $1, id, 'security', $2 FROM users WHERE company_id = $1 AND is_owner AND status = 'active'`,

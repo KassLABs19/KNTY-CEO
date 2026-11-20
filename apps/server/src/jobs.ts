@@ -1,13 +1,14 @@
 import type { Db } from './db.js';
 import { withCompany, withSystem } from './db.js';
 import { actorsFor, loadRules, loadSteps, type RequestRow } from './approvals.js';
+import { loadType } from './request-types.js';
 import { applyLeaver } from './people.js';
 import { alertStuck, deliverDue, type Fetch } from './integration/outbox.js';
 
 /**
  * Reminders and escalation. Escalation only tells more people; it never hands a step
- * to someone it doesn't belong to, so the order of signers and the two-signer rule
- * for payroll can't be bypassed. Nothing is ever approved automatically.
+ * to someone it doesn't belong to, so the order of signers and the different-signer rule
+ * can't be bypassed. Nothing is ever approved automatically.
  */
 export async function sweepCompany(db: Db, companyId: string, now = new Date()): Promise<{ reminded: number; escalated: number; leavers: number }> {
   return withCompany(db, companyId, async (tx) => {
@@ -36,11 +37,12 @@ export async function sweepCompany(db: Db, companyId: string, now = new Date()):
         reminded++;
       }
       if (!req.escalated_at && hours >= rules.escalateAfterHours) {
-        // Payroll goes to the owners; everything else to the next approver in the chain.
+        // Types without delegation (such as payroll) go to the owners; others to the next approver in the chain.
         const next = steps.find((s) => s.position === req.current_step + 1);
-        const targets = req.kind === 'payroll' || !next
+        const delegable = (await loadType(tx, req.kind))?.delegable ?? false;
+        const targets = !delegable || !next
           ? (await tx.query<{ id: string }>(`SELECT id FROM users WHERE is_owner AND status = 'active'`)).rows.map((r) => r.id)
-          : (await tx.query<{ id: string }>(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = $1 AND u.status = 'active'`, [next.role_key])).rows.map((r) => r.id);
+          : (await tx.query<{ id: string }>(`SELECT id FROM users WHERE role_id = $1 AND status = 'active'`, [next.role_id])).rows.map((r) => r.id);
         await notify([...targets, ...actors.map((a) => a.userId)], `Escalated: ${req.title} has waited ${hours} hours at “${steps.find((s) => s.position === req.current_step)?.label ?? 'its current step'}”.`, 'escalation');
         await tx.query('UPDATE requests SET escalated_at = $2 WHERE id = $1', [req.id, now]);
         await tx.query('INSERT INTO request_events (company_id, request_id, what) VALUES ($1, $2, $3)', [companyId, req.id, `Escalated after ${hours} hours.`]);

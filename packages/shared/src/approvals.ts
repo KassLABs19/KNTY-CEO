@@ -1,130 +1,111 @@
-import type { RoleKey } from './roles.js';
+import { MODULES, type Module, type RoleKey } from './roles.js';
 
 /**
- * Approval chains.
+ * Approval chains are configured per request type, not written into the code.
  *
- * Every request starts in a partner system (HR system or Predicto). The partner owns
- * and runs the steps before a fixed hand-off point; the Control Center owns every step
- * after it. Neither side can configure the other's steps, so the two can't disagree.
+ * The HR system runs its own steps for a request, up to a fixed hand-off point, and then
+ * sends it here. From there the Control Center runs the steps the account owners set for
+ * that request type in Settings. New request types can be added without changing code:
+ * the HR system starts sending a new `kind`, and an owner sets up its steps.
  */
-
-export const SYSTEMS = ['hr', 'predicto'] as const;
-export type PartnerSystem = (typeof SYSTEMS)[number];
-
-export const REQUEST_KINDS = ['leave', 'payroll', 'hire', 'expense', 'refund', 'manual_payment'] as const;
-export type RequestKind = (typeof REQUEST_KINDS)[number];
-
-export const KIND_SYSTEM: Record<RequestKind, PartnerSystem> = {
-  leave: 'hr',
-  payroll: 'hr',
-  hire: 'hr',
-  expense: 'hr',
-  refund: 'predicto',
-  manual_payment: 'predicto',
-};
 
 export type RequestStatus = 'pending' | 'approved' | 'rejected' | 'returned' | 'cancelled';
 export type StepState = 'done' | 'now' | 'later' | 'rejected' | 'returned';
 export type Decision = 'approve' | 'reject' | 'send_back';
 
+/** A request type's key, as the HR system sends it: lower case letters, digits and _. */
+export const KIND_PATTERN = /^[a-z][a-z0-9_]{1,39}$/;
+
+export interface StepConfig {
+  /** The role that decides this step. */
+  roleId: string;
+  /** Shown in the chain, for example "CFO · signer 1 of 2". */
+  label: string;
+  /** Only include this step when the amount is above this (minor units). Null: always. */
+  aboveMinor: number | null;
+}
+
+export interface RequestTypeConfig {
+  key: string;
+  name: string;
+  /** The access-matrix area that decides who can see these requests. */
+  module: Module;
+  /** Off: requests of this type are refused until an owner turns it on. */
+  active: boolean;
+  steps: StepConfig[];
+  /** Approving needs the password entered again. */
+  reauth: boolean;
+  /** Steps may be handled by a delegate while the approver is away. */
+  delegable: boolean;
+  /** Requests the HR system marks as checked may be approved several at a time. */
+  bulkAllowed: boolean;
+  /** Lock the request once approved; any change must come back as a new version. */
+  lockWhenApproved: boolean;
+}
+
 export interface ApprovalRules {
-  /** Head of Ops may approve refunds alone up to this amount (minor units). Null = not set. */
-  refundOpsLimitMinor: number | null;
-  /** The CFO may approve refunds alone up to this amount (minor units). Null = not set. */
-  refundCfoLimitMinor: number | null;
-  /** Department heads' leave goes to the CEO after the Head of HR. */
-  deptHeadLeaveToCeo: boolean;
   /** Remind the approver after this many hours. */
   remindAfterHours: number;
-  /** Also give the step to the delegate, or the next approver, after this many hours. */
+  /** Also tell their delegate, or the next approver, after this many hours. */
   escalateAfterHours: number;
-  /** Request kinds whose approval needs the password entered again. */
-  reauthFor: RequestKind[];
 }
 
-export const DEFAULT_RULES: ApprovalRules = {
-  refundOpsLimitMinor: null,
-  refundCfoLimitMinor: null,
-  deptHeadLeaveToCeo: true,
-  remindAfterHours: 24,
-  escalateAfterHours: 48,
-  reauthFor: ['payroll'],
-};
+export const DEFAULT_RULES: ApprovalRules = { remindAfterHours: 24, escalateAfterHours: 48 };
 
-export interface ChainStepPlan {
-  role: RoleKey;
-  label: string;
-}
-
-export interface ChainInput {
-  kind: RequestKind;
-  amountMinor?: number | null;
-  /** Role of the person the request is for or from, when they have a Control Center login. */
-  requesterRoleKey?: RoleKey | null;
+/** The steps that apply to one request, given its amount. */
+export function stepsFor(type: Pick<RequestTypeConfig, 'steps'>, amountMinor: number | null | undefined): StepConfig[] {
+  return type.steps.filter((s) => s.aboveMinor === null || (amountMinor ?? 0) > s.aboveMinor);
 }
 
 /**
- * The Control Center's steps for one request, in order. The partner's own steps are
- * already done by the time a request arrives and are not included here.
+ * Starting request types for a new company, written with role keys; setup turns the keys
+ * into the company's role ids. Owners can change all of them.
  */
-export function consoleChain(input: ChainInput, rules: ApprovalRules): ChainStepPlan[] {
-  switch (input.kind) {
-    case 'payroll':
-      // Always two different signers, CFO first.
-      return [
-        { role: 'cfo', label: 'CFO · signer 1 of 2' },
-        { role: 'ceo', label: 'CEO · signer 2 of 2' },
-      ];
-    case 'hire':
-      return [
-        { role: 'cfo', label: 'CFO' },
-        { role: 'ceo', label: 'CEO' },
-      ];
-    case 'expense':
-      // A CFO's own claim skips to the CEO: nobody approves their own request.
-      return input.requesterRoleKey === 'cfo' ? [{ role: 'ceo', label: 'CEO' }] : [{ role: 'cfo', label: 'CFO' }];
-    case 'leave':
-      return rules.deptHeadLeaveToCeo ? [{ role: 'ceo', label: 'CEO' }] : [];
-    case 'manual_payment':
-      return [{ role: 'ops_head', label: 'Head of Operations' }];
-    case 'refund': {
-      const amount = input.amountMinor ?? 0;
-      const ops = rules.refundOpsLimitMinor;
-      const cfo = rules.refundCfoLimitMinor;
-      // Until both limits are set, every refund goes to the CFO.
-      if (ops === null || cfo === null) return [{ role: 'cfo', label: 'CFO' }];
-      if (amount <= ops) return [{ role: 'ops_head', label: 'Head of Operations' }];
-      if (amount <= cfo) return [{ role: 'ops_head', label: 'Head of Operations' }, { role: 'cfo', label: 'CFO' }];
-      return [
-        { role: 'ops_head', label: 'Head of Operations' },
-        { role: 'cfo', label: 'CFO' },
-        { role: 'ceo', label: 'CEO' },
-      ];
-    }
+export const DEFAULT_REQUEST_TYPES: (Omit<RequestTypeConfig, 'steps'> & { steps: { role: RoleKey; label: string; aboveMinor: number | null }[] })[] = [
+  {
+    key: 'leave', name: 'Leave (department heads)', module: 'leave', active: true,
+    steps: [{ role: 'ceo', label: 'CEO', aboveMinor: null }],
+    reauth: false, delegable: true, bulkAllowed: false, lockWhenApproved: false,
+  },
+  {
+    key: 'payroll', name: 'Payroll run', module: 'payroll', active: true,
+    steps: [
+      { role: 'cfo', label: 'CFO · signer 1 of 2', aboveMinor: null },
+      { role: 'ceo', label: 'CEO · signer 2 of 2', aboveMinor: null },
+    ],
+    reauth: true, delegable: false, bulkAllowed: false, lockWhenApproved: true,
+  },
+  {
+    key: 'hire', name: 'New hire', module: 'people', active: true,
+    steps: [{ role: 'cfo', label: 'CFO', aboveMinor: null }, { role: 'ceo', label: 'CEO', aboveMinor: null }],
+    reauth: false, delegable: true, bulkAllowed: false, lockWhenApproved: false,
+  },
+  {
+    key: 'expense', name: 'Expense claim', module: 'finance', active: true,
+    steps: [{ role: 'cfo', label: 'CFO', aboveMinor: null }],
+    reauth: false, delegable: true, bulkAllowed: false, lockWhenApproved: false,
+  },
+];
+
+/** Checks one request type before it is saved. Returns a message, or null when it's fine. */
+export function validateRequestType(t: RequestTypeConfig, roleIds: string[]): string | null {
+  if (!KIND_PATTERN.test(t.key)) return 'The key must start with a letter and use only lower case letters, digits and _.';
+  if (!t.name.trim()) return 'Give the request type a name.';
+  if (!MODULES.includes(t.module)) return 'Choose which area these requests belong to.';
+  if (t.active && t.steps.length === 0) return 'An active request type needs at least one step.';
+  if (t.steps.length > 8) return 'Use at most 8 steps.';
+  for (const s of t.steps) {
+    if (!roleIds.includes(s.roleId)) return 'Every step needs a role that exists.';
+    if (!s.label.trim()) return 'Give every step a label.';
+    if (s.aboveMinor !== null && (!Number.isInteger(s.aboveMinor) || s.aboveMinor < 0)) return 'Amounts must be whole numbers of zero or more.';
   }
-}
-
-/** The partner-owned steps for each kind, shown read-only in the Control Center. */
-export const PARTNER_STEPS: Record<RequestKind, string> = {
-  leave: 'Head of HR (in the HR system)',
-  payroll: 'HR officer prepares and freezes (in the HR system)',
-  hire: 'Department head, Head of HR (in the HR system)',
-  expense: 'Finance checks receipts (in the HR system)',
-  refund: 'Rule check before the first deadline (in Predicto)',
-  manual_payment: 'Reference and phone checks (in Predicto)',
-};
-
-/** Kinds that may be approved in bulk, and only when the partner marked them as checked. */
-export const BULK_KINDS: readonly RequestKind[] = ['manual_payment'];
-
-/** Kinds that can never be handed to a delegate. */
-export const NEVER_DELEGATED: readonly RequestKind[] = ['payroll'];
-
-export function validateRules(r: ApprovalRules): string | null {
-  if (r.refundOpsLimitMinor !== null && r.refundCfoLimitMinor !== null && r.refundCfoLimitMinor <= r.refundOpsLimitMinor) {
-    return 'The CFO’s refund limit must be higher than the Head of Operations’ limit.';
-  }
-  if (r.escalateAfterHours <= r.remindAfterHours) return 'Escalation must come after the reminder.';
-  if (r.remindAfterHours < 1) return 'The reminder must be at least 1 hour.';
+  if (t.steps.length > 0 && t.steps.every((s) => s.aboveMinor !== null)) return 'At least one step must apply to every amount, or small requests would have no steps.';
   return null;
 }
+
+export function validateRules(r: ApprovalRules): string | null {
+  if (r.remindAfterHours < 1) return 'The reminder must be at least 1 hour.';
+  if (r.escalateAfterHours <= r.remindAfterHours) return 'Escalation must come after the reminder.';
+  return null;
+}
+

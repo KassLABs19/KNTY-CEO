@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BULK_KINDS } from '@ceo/shared';
 import type { Config } from '../config.js';
 import { withCompany, type Db } from '../db.js';
 import { requireAuth } from '../guard.js';
@@ -8,6 +7,7 @@ import { reauthValid } from '../auth/tokens.js';
 import { canSee, decide, loadRules, loadSteps, type RequestRow } from '../approvals.js';
 import { AppError, outcome } from '../errors.js';
 import { detail, summarize } from '../views.js';
+import { loadType, typeCache } from '../request-types.js';
 
 const decideBody = z.object({
   decision: z.enum(['approve', 'reject', 'send_back']),
@@ -19,15 +19,14 @@ export function registerRequestRoutes(app: FastifyInstance, db: Db, config: Conf
   const auth = requireAuth(db, config.JWT_SECRET, { module: 'approvals', min: 1 });
 
   app.get('/api/requests', { preHandler: auth }, async (req) => {
-    const { filter } = z.object({ filter: z.enum(['mine', 'all', 'hr', 'predicto', 'decided']).default('mine') }).parse(req.query);
+    const { filter } = z.object({ filter: z.enum(['mine', 'all', 'decided']).default('mine') }).parse(req.query);
     const u = req.user!;
     return withCompany(db, u.companyId, async (tx) => {
       const rules = await loadRules(tx);
+      const types = typeCache(tx);
       const where = {
         mine: `status = 'pending'`,
         all: 'true',
-        hr: `system = 'hr'`,
-        predicto: `system = 'predicto'`,
         decided: `status IN ('approved', 'rejected', 'returned', 'cancelled')`,
       }[filter];
       const rows = (await tx.query<RequestRow>(`SELECT * FROM requests WHERE ${where} ORDER BY updated_at DESC LIMIT 300`)).rows;
@@ -35,7 +34,7 @@ export function registerRequestRoutes(app: FastifyInstance, db: Db, config: Conf
       for (const r of rows) {
         const steps = await loadSteps(tx, r.id);
         if (!(await canSee(tx, u, r, steps))) continue;
-        const s = await summarize(tx, u, r, steps, rules.remindAfterHours);
+        const s = await summarize(tx, u, r, steps, rules.remindAfterHours, await types(r.kind));
         if (filter === 'mine' && !s.yourTurn) continue;
         out.push(s);
       }
@@ -65,8 +64,8 @@ export function registerRequestRoutes(app: FastifyInstance, db: Db, config: Conf
     });
   });
 
-  // Bulk approval: only for kinds the partner already checked (manual payments whose
-  // reference and phone passed). Each item is decided on its own, in its own transaction.
+  // Bulk approval: only for request types that allow it, and only requests the HR system
+  // marked as already checked. Each item is decided on its own, in its own transaction.
   app.post('/api/requests/bulk-approve', { preHandler: auth }, async (req) => {
     const body = z.object({ items: z.array(z.object({ id: z.string().uuid(), version: z.number().int().positive() })).min(1).max(50) }).safeParse(req.body);
     if (!body.success) throw new AppError(400, 'invalid_request', 'Choose between 1 and 50 requests.');
@@ -77,7 +76,7 @@ export function registerRequestRoutes(app: FastifyInstance, db: Db, config: Conf
       try {
         await withCompany(db, u.companyId, async (tx) => {
           const r = (await tx.query<RequestRow>('SELECT kind, bulk_eligible FROM requests WHERE id = $1', [item.id])).rows[0];
-          if (!r || !r.bulk_eligible || !BULK_KINDS.includes(r.kind)) throw new AppError(400, 'not_bulk', 'This request can’t be approved in bulk. Open it to decide.');
+          if (!r || !r.bulk_eligible || !(await loadType(tx, r.kind))?.bulkAllowed) throw new AppError(400, 'not_bulk', 'This request can’t be approved in bulk. Open it to decide.');
           await decide(tx, u, item.id, { decision: 'approve', version: item.version, reauthOk: false, ip: req.ip });
         });
         approved.push(item.id);

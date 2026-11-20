@@ -1,17 +1,11 @@
 import { formatMoney, type RequestSummary } from '@ceo/shared';
 
-const SYSTEMS = {
-  hr: { name: 'HR system', icon: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21c0-4 3-6 7-6s7 2 7 6' },
-  predicto: { name: 'Predicto', icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7l4 3-1.5 4.5h-5L8 10z' },
-};
-
-/** Neutral label with an icon, so colour is kept for warnings and status only. */
-export function SystemLabel({ system }: { system: 'hr' | 'predicto' }) {
-  const s = SYSTEMS[system];
+/** The request type, as a neutral label, so colour is kept for warnings and status only. */
+export function TypeLabel({ name }: { name: string }) {
   return (
-    <span className="pill sys-label">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={s.icon} /></svg>
-      {s.name}
+    <span className="pill sys-label" title={name}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 9h8M8 13h8M8 17h5" /></svg>
+      <span className="ellip">{name}</span>
     </span>
   );
 }
@@ -34,7 +28,7 @@ export function ageText(h: number) {
 export function WaitingRow({ r, onOpen }: { r: RequestSummary; onOpen: () => void }) {
   return (
     <button className="req-row" onClick={onOpen}>
-      <SystemLabel system={r.system} />
+      <TypeLabel name={r.typeName} />
       <span className="grow col">
         <span className="title">{r.title}</span>
         <span className="quiet small">{r.subtitle}{r.onBehalfOf ? ` · for ${r.onBehalfOf}` : ''} · {ageText(r.ageHours)}</span>

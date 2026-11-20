@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiRequestError, formatMoney, type Me, type RequestDetail, type RequestFilter, type RequestSummary } from '@ceo/shared';
 import { api } from '../api';
-import { STATUS, SystemLabel, ageText } from './parts';
+import { STATUS, TypeLabel, ageText } from './parts';
 import { ReauthDialog } from './dialogs';
 
 const FILTERS: { id: RequestFilter; label: string }[] = [
   { id: 'mine', label: 'Your step' },
   { id: 'all', label: 'All' },
-  { id: 'hr', label: 'HR system' },
-  { id: 'predicto', label: 'Predicto' },
   { id: 'decided', label: 'Decided' },
 ];
 
@@ -38,7 +36,7 @@ export function Approvals({ me, initialId }: { me: Me; initialId: string | null 
       setChecked(new Set());
       setMessage(res.failed.length
         ? { kind: 'bad', text: `${res.approved.length} approved. ${res.failed.length} could not be: ${res.failed.map((f) => f.message).join(' ')}` }
-        : { kind: 'good', text: `${res.approved.length} approved. The partner system has been sent the decisions.` });
+        : { kind: 'good', text: `${res.approved.length} approved. The HR system has been sent the decisions.` });
       load();
     } catch (e) {
       setMessage({ kind: 'bad', text: e instanceof ApiRequestError ? e.message : 'Could not reach the server.' });
@@ -48,7 +46,7 @@ export function Approvals({ me, initialId }: { me: Me; initialId: string | null 
   return (
     <>
       <div>
-        <span className="quiet small">Requests from every connected system that reached the Control Center</span>
+        <span className="quiet small">Requests from the HR system that reached the Control Center</span>
         <h1>Approvals</h1>
       </div>
       {error && <div className="alert alert-bad" role="alert">{error}</div>}
@@ -64,7 +62,7 @@ export function Approvals({ me, initialId }: { me: Me; initialId: string | null 
       </div>
       {chosen.length > 0 && (
         <div className="bulkbar" role="region" aria-label="Bulk actions">
-          <span className="grow"><strong>{chosen.length} selected</strong> · all passed the partner’s checks</span>
+          <span className="grow"><strong>{chosen.length} selected</strong> · all passed the HR system’s checks</span>
           <button className="btn" onClick={() => setChecked(new Set())}>Clear</button>
           <button className="btn btn-light" onClick={bulkApprove}>Approve selected</button>
         </div>
@@ -84,7 +82,7 @@ export function Approvals({ me, initialId }: { me: Me; initialId: string | null 
                 </label>
               ) : eligible.length > 0 ? <span className="check" aria-hidden="true" /> : null}
               <button className="req-row" aria-pressed={selected === r.id} onClick={() => setSelected(r.id)}>
-                <SystemLabel system={r.system} />
+                <TypeLabel name={r.typeName} />
                 <span className="grow col">
                   <span className="title">{r.title}</span>
                   <span className="quiet small">{r.subtitle}{r.onBehalfOf ? ` · for ${r.onBehalfOf}` : ''} · {ageText(r.ageHours)}</span>
@@ -139,11 +137,11 @@ function Detail({ id, me, onChanged }: { id: string; me: Me; onChanged: () => vo
 
   return (
     <section className="card detail" aria-labelledby="det-h">
-      <span className="quiet small">{d.ref} · <SystemLabel system={d.system} /> · trace <span className="mono">{d.traceId}</span> · version {d.version}</span>
+      <span className="quiet small">{d.ref} · <TypeLabel name={d.typeName} /> · trace <span className="mono">{d.traceId}</span> · version {d.version}</span>
       <h2 id="det-h">{d.title}</h2>
       <span>{d.subtitle}</span>
 
-      {d.changedUpstream && <div className="alert alert-warn" role="alert"><strong>Changed in the {d.system === 'hr' ? 'HR system' : 'Predicto'} after it reached this step.</strong> You’re now looking at version {d.version}. Earlier approvals in the Control Center were reset.</div>}
+      {d.changedUpstream && <div className="alert alert-warn" role="alert"><strong>Changed in the HR system after it reached this step.</strong> You’re now looking at version {d.version}. Earlier approvals in the Control Center were reset.</div>}
       {d.onBehalfOf && <div className="alert alert-info">You’re deciding this for {d.onBehalfOf} (delegation). The audit log records both names.</div>}
       {d.overdue && d.status === 'pending' && <div className="alert alert-warn">Waiting {ageText(d.ageHours).replace(' ago', '')}. Reminders and escalation have gone out; nothing is ever approved automatically.</div>}
 
@@ -163,12 +161,12 @@ function Detail({ id, me, onChanged }: { id: string; me: Me; onChanged: () => vo
                 <span>{s.label}</span>
                 {s.decidedBy && s.owner === 'console' && <span className="quiet small">{s.decidedBy}{s.onBehalfOf ? ` for ${s.onBehalfOf}` : ''}{s.note ? ` — “${s.note}”` : ''}</span>}
               </span>
-              <span className="pill">{s.owner === 'partner' ? (d.system === 'hr' ? 'HR system' : 'Predicto') : 'Control Center'}</span>
+              <span className="pill">{s.owner === 'hr' ? 'HR system' : 'Control Center'}</span>
               <span className="quiet small state">{{ done: 'Done', now: 'Waiting', later: 'Not yet', rejected: 'Rejected', returned: 'Sent back' }[s.state]}</span>
             </li>
           ))}
         </ol>
-        {d.kind === 'payroll' && <p className="quiet small">Payroll needs two different signers, CFO then CEO, and locks once both have signed.</p>}
+        <p className="quiet small">Each step needs a different person. Steps are set per request type in Settings.</p>
       </div>
 
       {d.status === 'pending' && d.blockedReason && <div className="alert alert-info">{d.blockedReason}</div>}
@@ -180,13 +178,13 @@ function Detail({ id, me, onChanged }: { id: string; me: Me; onChanged: () => vo
             <textarea id="note" className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
           </div>
           <div className="row wrap">
-            <button className="btn btn-primary" disabled={busy} onClick={() => act('approve')}>{d.kind === 'payroll' ? 'Sign and approve' : d.changedUpstream ? `Approve version ${d.version}` : 'Approve'}</button>
+            <button className="btn btn-primary" disabled={busy} onClick={() => act('approve')}>{d.needsReauth ? 'Sign and approve' : d.changedUpstream ? `Approve version ${d.version}` : 'Approve'}</button>
             <button className="btn" disabled={busy || !note.trim()} onClick={() => act('send_back')}>Send back for changes</button>
             <button className="btn btn-danger" disabled={busy} onClick={() => act('reject')}>Reject</button>
           </div>
         </div>
       )}
-      {d.status !== 'pending' && <div className="alert alert-info">{STATUS[d.status]![0]}. {d.status === 'returned' ? 'It’s back with the requester and starts again from the first step when resubmitted.' : 'The decision is sent to the partner system and recorded in the audit log.'}</div>}
+      {d.status !== 'pending' && <div className="alert alert-info">{STATUS[d.status]![0]}. {d.status === 'returned' ? 'It’s back with the requester and starts again from the first step when resubmitted.' : 'The decision is sent to the HR system and recorded in the audit log.'}</div>}
 
       <details>
         <summary>History</summary>

@@ -6,7 +6,7 @@ import { loadConfig, type Config } from '../src/config.js';
 import { createPool, withCompany, withSystem, type Db } from '../src/db.js';
 import { migrate } from '../src/migrate.js';
 import { buildApp } from '../src/app.js';
-import { seed, DEMO_PASSWORD, DEMO_PARTNER_SECRETS } from '../src/seed.js';
+import { seed, DEMO_PASSWORD, DEMO_HR_SECRETS } from '../src/seed.js';
 import { currentTotp } from '../src/auth/totp.js';
 import { signBody, verifySignature } from '../src/integration/hmac.js';
 import { deliverDue, backoffMinutes } from '../src/integration/outbox.js';
@@ -62,15 +62,18 @@ async function reauth(token: string) {
 }
 const byExternal = async (externalId: string) => (await sys('SELECT id, version, status, locked FROM requests WHERE external_id = $1', [externalId])).rows[0];
 
-/** Sends a signed message as a partner, the way the HR system or Predicto would. */
-async function partnerSend(system: 'hr' | 'predicto', body: Record<string, unknown>, opts: { secret?: string; messageId?: string } = {}) {
-  const partnerId = (await sys('SELECT id FROM partners WHERE company_id = $1 AND system = $2', [companyId, system])).rows[0].id;
-  const raw = JSON.stringify({ messageId: opts.messageId ?? randomUUID(), system, contractVersion: CONTRACT_VERSION, sentAt: new Date().toISOString(), traceId: 'trace-1', ...body });
+/** Sends a signed message the way the HR system would. */
+async function hrSend(body: Record<string, unknown>, opts: { secret?: string; messageId?: string } = {}) {
+  const partnerId = (await sys(`SELECT id FROM partners WHERE company_id = $1 AND system = 'hr'`, [companyId])).rows[0].id;
+  const raw = JSON.stringify({ messageId: opts.messageId ?? randomUUID(), system: 'hr', contractVersion: CONTRACT_VERSION, sentAt: new Date().toISOString(), traceId: 'trace-1', ...body });
   return app.inject({
     method: 'POST', url: '/api/integration/inbound', payload: raw,
-    headers: { 'content-type': 'application/json', 'x-cc-partner': partnerId, [SIGNATURE_HEADER]: signBody(raw, opts.secret ?? DEMO_PARTNER_SECRETS[system].inbound) },
+    headers: { 'content-type': 'application/json', 'x-cc-partner': partnerId, [SIGNATURE_HEADER]: signBody(raw, opts.secret ?? DEMO_HR_SECRETS.inbound) },
   });
 }
+const roleId = async (key: string) => (await sys('SELECT id FROM roles WHERE key = $1 AND company_id = $2', [key, companyId])).rows[0].id as string;
+const stepRoles = async (externalId: string) =>
+  (await sys(`SELECT ro.key FROM request_steps s JOIN requests r ON r.id = s.request_id JOIN roles ro ON ro.id = s.role_id WHERE r.external_id = $1 ORDER BY position`, [externalId])).rows.map((x) => x.key);
 const requestBody = (externalId: string, kind: string, extra: Record<string, unknown> = {}) => ({
   type: 'request.upsert',
   request: { externalId, version: 1, kind, title: `${kind} ${externalId}`, ...extra },
@@ -143,10 +146,10 @@ describe('approvals', () => {
     const titles = mine.map((r) => r.title);
     expect(titles).toContain('Payroll run · October');
     expect(titles).toContain('Expense claim · conference travel');
-    expect(titles).not.toContain('Refund request'); // limits not set: refunds go to the CFO
-    const payment = mine.find((r) => r.kind === 'manual_payment')!;
-    expect(payment.onBehalfOf).toBe('Liya Haile');
-    expect(payment.bulkEligible).toBe(true);
+    const cash = mine.find((r) => r.kind === 'petty_cash')!;
+    expect(cash.typeName).toBe('Petty cash payout');
+    expect(cash.onBehalfOf).toBe('Liya Haile');
+    expect(cash.bulkEligible).toBe(true);
   });
 
   it('needs the password again to sign payroll, then locks it and queues the decision', async () => {
@@ -162,7 +165,7 @@ describe('approvals', () => {
   });
 
   it('never lets one person sign both payroll steps', async () => {
-    expect((await partnerSend('hr', requestBody('PAY-2026-11', 'payroll', { money: { amountMinor: 1000, currency: 'ETB' } }))).json().status).toBe('created');
+    expect((await hrSend(requestBody('PAY-2026-11', 'payroll', { money: { amountMinor: 1000, currency: 'ETB' } }))).json().status).toBe('created');
     const pay = await byExternal('PAY-2026-11');
     const rt = await reauth(mekdes);
     expect((await post(mekdes, `/api/requests/${pay.id}/decide`, { decision: 'approve', version: 1 }, { 'x-reauth-token': rt })).statusCode).toBe(200);
@@ -173,7 +176,7 @@ describe('approvals', () => {
   it('never hands payroll to a delegate', async () => {
     const yonasId = (await sys(`SELECT id FROM users WHERE email = 'yonas@demo.local'`)).rows[0].id;
     expect((await post(mekdes, '/api/delegations', { toUserId: yonasId, endsAt: new Date(Date.now() + 86400_000).toISOString() })).statusCode).toBe(200);
-    expect((await partnerSend('hr', requestBody('PAY-2026-12', 'payroll'))).statusCode).toBe(200);
+    expect((await hrSend(requestBody('PAY-2026-12', 'payroll'))).statusCode).toBe(200);
     const yonas = await signIn('yonas@demo.local');
     const pay = await byExternal('PAY-2026-12');
     const res = await post(yonas, `/api/requests/${pay.id}/decide`, { decision: 'approve', version: 1 }, { 'x-reauth-token': await reauth(yonas) });
@@ -189,7 +192,7 @@ describe('approvals', () => {
   it('refuses a decision on an old version and shows the change', async () => {
     const leave = await byExternal('LV-3381');
     const v2 = requestBody('LV-3381', 'leave', { version: 2, title: 'Leave request · 5 days', requesterEmployeeId: 'E-005', department: 'Sales' });
-    expect((await partnerSend('hr', v2)).json().status).toBe('updated');
+    expect((await hrSend(v2)).json().status).toBe('updated');
     const stale = await post(hana, `/api/requests/${leave.id}/decide`, { decision: 'approve', version: 1 });
     expect(stale.json().error).toBe('stale_version');
     const view = (await get(hana, `/api/requests/${leave.id}`)).json();
@@ -202,46 +205,66 @@ describe('approvals', () => {
     expect((await post(mekdes, `/api/requests/${hire.id}/decide`, { decision: 'send_back', version: 1 })).json().error).toBe('note_required');
     const back = await post(mekdes, `/api/requests/${hire.id}/decide`, { decision: 'send_back', version: 1, note: 'Attach the budget line.' });
     expect(back.json().status).toBe('returned');
-    expect((await partnerSend('hr', requestBody('HIRE-0044', 'hire', { version: 2 }))).json().status).toBe('updated');
+    expect((await hrSend(requestBody('HIRE-0044', 'hire', { version: 2 }))).json().status).toBe('updated');
     const again = (await get(mekdes, `/api/requests/${hire.id}`)).json();
     expect(again.status).toBe('pending');
     expect(again.yourTurn).toBe(true);
   });
 
-  it('bulk-approves checked payments as a delegate and records on whose behalf', async () => {
+  it('adds a step only above its amount', async () => {
+    expect(await stepRoles('PC-501')).toEqual(['ops_head']);
+    expect(await stepRoles('PC-503')).toEqual(['ops_head', 'cfo']);
+  });
+
+  it('bulk-approves checked requests as a delegate and records on whose behalf', async () => {
     const mine = (await get(hana, '/api/requests?filter=mine')).json() as RequestSummary[];
     const items = mine.filter((r) => r.bulkEligible).map((r) => ({ id: r.id, version: r.version }));
     expect(items.length).toBe(3);
     const res = (await post(hana, '/api/requests/bulk-approve', { items })).json();
     expect(res.approved.length).toBe(3);
-    const audit = await sys(`SELECT on_behalf_of FROM audit_log WHERE action = 'request.approve' AND target_id IN (SELECT ref FROM requests WHERE kind = 'manual_payment')`);
+    const audit = await sys(`SELECT on_behalf_of FROM audit_log WHERE action = 'request.approve' AND target_id IN (SELECT ref FROM requests WHERE kind = 'petty_cash')`);
     expect(audit.rows.every((r) => r.on_behalf_of)).toBe(true);
+    // The large one now waits on the CFO.
+    expect((await get(mekdes, '/api/requests?filter=mine')).json().map((r: RequestSummary) => r.title)).toContain('Petty cash · Hardware repair');
+  });
+
+  it('refuses bulk approval for a type that does not allow it', async () => {
+    const pay = await byExternal('PAY-2026-12');
+    expect((await post(hana, '/api/requests/bulk-approve', { items: [{ id: pay.id, version: 1 }] })).json().failed.length).toBe(1);
   });
 });
 
-describe('partner messages', () => {
+describe('HR system messages', () => {
   it('refuses a bad signature', async () => {
-    expect((await partnerSend('hr', requestBody('X-1', 'leave'), { secret: 'wrong-secret' })).statusCode).toBe(401);
+    expect((await hrSend(requestBody('X-1', 'leave'), { secret: 'wrong-secret' })).statusCode).toBe(401);
   });
 
   it('applies a message once, however often it is retried', async () => {
     const messageId = randomUUID();
-    const body = requestBody('RF-9001', 'refund', { money: { amountMinor: 500, currency: 'ETB' } });
-    expect((await partnerSend('predicto', body, { messageId })).json().status).toBe('created');
-    expect((await partnerSend('predicto', body, { messageId })).json().status).toBe('duplicate');
+    const body = requestBody('EXP-9001', 'expense', { money: { amountMinor: 500, currency: 'ETB' } });
+    expect((await hrSend(body, { messageId })).json().status).toBe('created');
+    expect((await hrSend(body, { messageId })).json().status).toBe('duplicate');
+  });
+
+  it('refuses a request type nobody has set up, so the HR system can resend it later', async () => {
+    const messageId = randomUUID();
+    const res = await hrSend(requestBody('TR-1', 'training_budget'), { messageId });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toBe('not_routed');
+    expect((await sys('SELECT count(*)::int AS n FROM inbox WHERE message_id = $1', [messageId])).rows[0].n).toBe(0);
+  });
+
+  it('refuses messages that claim to come from another system', async () => {
+    expect((await hrSend({ ...requestBody('P-1', 'payroll'), system: 'other' })).statusCode).toBe(400);
   });
 
   it('ignores an older version arriving late', async () => {
-    expect((await partnerSend('hr', requestBody('LV-3381', 'leave', { version: 1, requesterEmployeeId: 'E-005' }))).json().status).toBe('ignored_old_version');
-  });
-
-  it('only lets the HR system send its own kinds of request', async () => {
-    expect((await partnerSend('predicto', requestBody('P-1', 'payroll'))).statusCode).toBe(400);
+    expect((await hrSend(requestBody('LV-3381', 'leave', { version: 1, requesterEmployeeId: 'E-005' }))).json().status).toBe('ignored_old_version');
   });
 
   it('suspends a leaver at once and signs them out', async () => {
     const ruth = await signIn('ruth@demo.local');
-    const res = await partnerSend('hr', {
+    const res = await hrSend({
       type: 'people.event', event: 'leaver',
       employee: { employeeId: 'E-005', fullName: 'Ruth Kebede', email: 'ruth@demo.local', department: 'Sales', jobTitle: 'Head of Sales', effectiveDate: new Date().toISOString().slice(0, 10) },
     });
@@ -252,7 +275,7 @@ describe('partner messages', () => {
 
   it('only invites people the HR system knows, and the invite works once', async () => {
     const hana = await signIn('hana@demo.local');
-    const joiner = await partnerSend('hr', {
+    const joiner = await hrSend({
       type: 'people.event', event: 'joiner',
       employee: { employeeId: 'E-050', fullName: 'Kidus Fikre', email: 'kidus@demo.local', department: 'Engineering', jobTitle: 'Engineering Lead', effectiveDate: '2026-11-01' },
     });
@@ -272,17 +295,48 @@ describe('partner messages', () => {
 });
 
 describe('settings', () => {
-  it('needs the password again, checks the rules, then routes refunds by amount', async () => {
+  const put = (token: string, url: string, body: unknown, rt?: string) =>
+    app.inject({ method: 'PUT', url, payload: body as object, headers: h(token, rt ? { 'x-reauth-token': rt } : {}) });
+
+  it('needs the password again and checks the reminder rules', async () => {
     const hana = await signIn('hana@demo.local');
-    const rules = { refundOpsLimitMinor: 50_000, refundCfoLimitMinor: 500_000, deptHeadLeaveToCeo: true, remindAfterHours: 24, escalateAfterHours: 48, reauthFor: ['payroll'] };
-    const put = (body: unknown, rt?: string) => app.inject({ method: 'PUT', url: '/api/settings/rules', payload: body as object, headers: h(hana, rt ? { 'x-reauth-token': rt } : {}) });
-    expect((await put(rules)).json().error).toBe('reauth_required');
+    const rules = { remindAfterHours: 24, escalateAfterHours: 48 };
+    expect((await put(hana, '/api/settings/rules', rules)).json().error).toBe('reauth_required');
     const rt = await reauth(hana);
-    expect((await put({ ...rules, refundCfoLimitMinor: 100 }, rt)).statusCode).toBe(400);
-    expect((await put(rules, rt)).statusCode).toBe(200);
-    await partnerSend('predicto', requestBody('RF-9100', 'refund', { money: { amountMinor: 600_000, currency: 'ETB' } }));
-    const steps = (await sys(`SELECT role_key FROM request_steps s JOIN requests r ON r.id = s.request_id WHERE r.external_id = 'RF-9100' ORDER BY position`)).rows;
-    expect(steps.map((s) => s.role_key)).toEqual(['ops_head', 'cfo', 'ceo']);
+    expect((await put(hana, '/api/settings/rules', { remindAfterHours: 24, escalateAfterHours: 12 }, rt)).statusCode).toBe(400);
+    expect((await put(hana, '/api/settings/rules', rules, rt)).json()).toEqual(rules);
+  });
+
+  it('lets an owner add a request type with an amount threshold, which then routes new requests', async () => {
+    const hana = await signIn('hana@demo.local');
+    const type = {
+      name: 'Training budget', module: 'people', active: true,
+      steps: [
+        { roleId: await roleId('hr_head'), label: 'Head of HR', aboveMinor: null },
+        { roleId: await roleId('ceo'), label: 'CEO · above ETB 10,000', aboveMinor: 1_000_000 },
+      ],
+      reauth: false, delegable: true, bulkAllowed: false, lockWhenApproved: false,
+    };
+    const mekdes = await signIn('mekdes@demo.local');
+    expect((await put(mekdes, '/api/request-types/training_budget', type)).statusCode).toBe(403);
+    expect((await put(hana, '/api/request-types/training_budget', type)).json().error).toBe('reauth_required');
+    const rt = await reauth(hana);
+    expect((await put(hana, '/api/request-types/Bad-Key', type, rt)).statusCode).toBe(400);
+    expect((await put(hana, '/api/request-types/training_budget', { ...type, steps: [{ ...type.steps[1] }] }, rt)).statusCode).toBe(400);
+    expect((await put(hana, '/api/request-types/training_budget', type, rt)).statusCode).toBe(200);
+
+    expect((await hrSend(requestBody('TR-1', 'training_budget', { money: { amountMinor: 200_000, currency: 'ETB' } }))).json().status).toBe('created');
+    expect((await hrSend(requestBody('TR-2', 'training_budget', { money: { amountMinor: 2_000_000, currency: 'ETB' } }))).json().status).toBe('created');
+    expect(await stepRoles('TR-1')).toEqual(['hr_head']);
+    expect(await stepRoles('TR-2')).toEqual(['hr_head', 'ceo']);
+    const settings = (await get(hana, '/api/settings')).json();
+    expect(settings.requestTypes.map((t: { key: string }) => t.key)).toContain('training_budget');
+
+    // Switched off: new requests of this type are refused again.
+    expect((await put(hana, '/api/request-types/training_budget', { ...type, active: false }, rt)).statusCode).toBe(200);
+    expect((await hrSend(requestBody('TR-3', 'training_budget'))).statusCode).toBe(422);
+    const logged = await sys(`SELECT action FROM audit_log WHERE target_id = 'training_budget' ORDER BY id`);
+    expect(logged.rows.map((r) => r.action)).toEqual(['settings.request_type_added', 'settings.request_type_changed']);
   });
 });
 
@@ -297,13 +351,12 @@ describe('background jobs', () => {
     expect(ok.delivered).toBeGreaterThan(0);
     const first = calls[0]!;
     expect(first.url).toMatch(/\/cc\/inbound$/);
-    const system = JSON.parse(first.body).externalId.startsWith('RF') || JSON.parse(first.body).externalId.startsWith('MP') ? 'predicto' : 'hr';
-    expect(verifySignature(first.headers[SIGNATURE_HEADER], first.body, DEMO_PARTNER_SECRETS[system].outbound)).toBe('ok');
+    expect(verifySignature(first.headers[SIGNATURE_HEADER], first.body, DEMO_HR_SECRETS.outbound)).toBe('ok');
 
     // A new decision, then the partner is down.
     const mekdes = await signIn('mekdes@demo.local');
-    const rf = await byExternal('RF-9001');
-    await post(mekdes, `/api/requests/${rf.id}/decide`, { decision: 'reject', version: 1, note: 'Past the deadline.' });
+    const exp = await byExternal('EXP-9001');
+    expect((await post(mekdes, `/api/requests/${exp.id}/decide`, { decision: 'reject', version: 1, note: 'No receipt.' })).statusCode).toBe(200);
     const down = await deliverDue(db, async () => ({ ok: false, status: 503 }));
     expect(down.failed).toBe(1);
     const row = (await sys(`SELECT attempts, last_error, next_try_at > now() + interval '50 seconds' AS later FROM outbox WHERE delivered_at IS NULL`)).rows[0];

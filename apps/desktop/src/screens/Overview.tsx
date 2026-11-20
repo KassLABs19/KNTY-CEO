@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { formatMoney, type Me, type OverviewData } from '@ceo/shared';
 import { api } from '../api';
-import { SystemLabel, WaitingRow } from './parts';
+import { WaitingRow } from './parts';
 
 export function Overview({ me, onOpen, onAll }: { me: Me; onOpen: (id: string) => void; onAll: () => void }) {
   const [data, setData] = useState<OverviewData | null>(null);
@@ -50,18 +50,13 @@ export function Overview({ me, onOpen, onAll }: { me: Me; onOpen: (id: string) =
               ))}
             </section>
             <section className="card" aria-labelledby="sys-h">
-              <h2 id="sys-h">Connected systems</h2>
-              {data.systems.map((s) => (
-                <div key={s.system} className="sys">
-                  <div className="row between">
-                    <SystemLabel system={s.system} />
-                    <span className={`pill ${s.connected ? 'pill-good' : 'pill-warn'}`}>{s.connected ? 'Address set' : 'No address yet'}</span>
-                  </div>
-                  <div className="row between line small"><span className="quiet">Last message</span><span>{s.lastMessageAt ? new Date(s.lastMessageAt).toLocaleString() : 'None yet'}</span></div>
-                  <div className="row between line small"><span className="quiet">Decisions waiting to send</span><span>{s.outboxWaiting}{s.oldestWaitingMinutes ? ` · oldest ${s.oldestWaitingMinutes} min` : ''}</span></div>
-                  <div className="row between line small"><span className="quiet">Contract version</span><span>{s.contractVersion ?? '—'}</span></div>
-                </div>
-              ))}
+              <div className="row between">
+                <h2 id="sys-h">HR system</h2>
+                <span className={`pill ${data.hr.connected ? 'pill-good' : 'pill-warn'}`}>{data.hr.connected ? 'Address set' : 'No address yet'}</span>
+              </div>
+              <div className="row between line small"><span className="quiet">Last message</span><span>{data.hr.lastMessageAt ? new Date(data.hr.lastMessageAt).toLocaleString() : 'None yet'}</span></div>
+              <div className="row between line small"><span className="quiet">Decisions waiting to send</span><span>{data.hr.outboxWaiting}{data.hr.oldestWaitingMinutes ? ` · oldest ${data.hr.oldestWaitingMinutes} min` : ''}</span></div>
+              <div className="row between line small"><span className="quiet">Contract version</span><span>{data.hr.contractVersion ?? '—'}</span></div>
             </section>
           </div>
         </>

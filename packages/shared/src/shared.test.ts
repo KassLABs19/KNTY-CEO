@@ -1,48 +1,61 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_REQUEST_TYPES,
   DEFAULT_RULES,
   canAccess,
-  consoleChain,
+  compareVersions,
   formatMoney,
   requestMessage,
   sanitizeLevels,
+  stepsFor,
   totalsByCurrency,
+  validateRequestType,
   validateRules,
-  compareVersions,
+  type RequestTypeConfig,
 } from './index.js';
 
-const withLimits = { ...DEFAULT_RULES, refundOpsLimitMinor: 50_000, refundCfoLimitMinor: 500_000 };
+const type = (steps: RequestTypeConfig['steps'], extra: Partial<RequestTypeConfig> = {}): RequestTypeConfig => ({
+  key: 'purchase', name: 'Something with amounts', module: 'finance', active: true, steps,
+  reauth: false, delegable: true, bulkAllowed: false, lockWhenApproved: false, ...extra,
+});
 
-describe('approval chains', () => {
-  it('always gives payroll two signers, CFO first', () => {
-    expect(consoleChain({ kind: 'payroll' }, DEFAULT_RULES).map((s) => s.role)).toEqual(['cfo', 'ceo']);
+describe('request types', () => {
+  it('ships payroll with two signers, never delegated, locked once approved', () => {
+    const payroll = DEFAULT_REQUEST_TYPES.find((t) => t.key === 'payroll')!;
+    expect(payroll.steps.map((s) => s.role)).toEqual(['cfo', 'ceo']);
+    expect(payroll).toMatchObject({ delegable: false, reauth: true, lockWhenApproved: true });
   });
 
-  it('sends every refund to the CFO until both limits are set', () => {
-    expect(consoleChain({ kind: 'refund', amountMinor: 100 }, DEFAULT_RULES).map((s) => s.role)).toEqual(['cfo']);
+  it('adds steps only above their amount', () => {
+    const t = type([
+      { roleId: 'ops', label: 'Ops', aboveMinor: null },
+      { roleId: 'cfo', label: 'CFO', aboveMinor: 50_000 },
+      { roleId: 'ceo', label: 'CEO', aboveMinor: 500_000 },
+    ]);
+    expect(stepsFor(t, 50_000).map((s) => s.roleId)).toEqual(['ops']);
+    expect(stepsFor(t, 50_001).map((s) => s.roleId)).toEqual(['ops', 'cfo']);
+    expect(stepsFor(t, 500_001).map((s) => s.roleId)).toEqual(['ops', 'cfo', 'ceo']);
+    expect(stepsFor(t, null).map((s) => s.roleId)).toEqual(['ops']);
   });
 
-  it('routes refunds by amount once limits are set', () => {
-    const chain = (amountMinor: number) => consoleChain({ kind: 'refund', amountMinor }, withLimits).map((s) => s.role);
-    expect(chain(50_000)).toEqual(['ops_head']);
-    expect(chain(50_001)).toEqual(['ops_head', 'cfo']);
-    expect(chain(500_001)).toEqual(['ops_head', 'cfo', 'ceo']);
+  it('checks a request type before saving', () => {
+    const ok = type([{ roleId: 'r1', label: 'CFO', aboveMinor: null }]);
+    expect(validateRequestType(ok, ['r1'])).toBeNull();
+    expect(validateRequestType({ ...ok, key: 'Bad Key' }, ['r1'])).toMatch(/key/);
+    expect(validateRequestType({ ...ok, steps: [] }, ['r1'])).toMatch(/at least one step/);
+    expect(validateRequestType({ ...ok, steps: [] , active: false }, ['r1'])).toBeNull();
+    expect(validateRequestType(ok, ['other'])).toMatch(/role/);
+    expect(validateRequestType(type([{ roleId: 'r1', label: 'CFO', aboveMinor: 100 }]), ['r1'])).toMatch(/every amount/);
   });
 
-  it('skips the CFO for the CFO’s own expense claim', () => {
-    expect(consoleChain({ kind: 'expense', requesterRoleKey: 'cfo' }, DEFAULT_RULES).map((s) => s.role)).toEqual(['ceo']);
-    expect(consoleChain({ kind: 'expense', requesterRoleKey: 'dept_head' }, DEFAULT_RULES).map((s) => s.role)).toEqual(['cfo']);
-  });
-
-  it('checks the rules make sense', () => {
-    expect(validateRules({ ...withLimits, refundCfoLimitMinor: 50_000 })).toMatch(/higher/);
+  it('checks the reminder rules', () => {
     expect(validateRules({ ...DEFAULT_RULES, escalateAfterHours: 24 })).toMatch(/after the reminder/);
-    expect(validateRules(withLimits)).toBeNull();
+    expect(validateRules(DEFAULT_RULES)).toBeNull();
   });
 });
 
 describe('access', () => {
-  it('keeps owners-only modules for owners', () => {
+  it('keeps owners-only areas for owners', () => {
     expect(canAccess({ isOwner: false, levels: { settings: 3 } }, 'settings')).toBe(false);
     expect(canAccess({ isOwner: true, levels: {} }, 'settings')).toBe(true);
     expect(sanitizeLevels({ settings: 3, approvals: 2 })).toEqual({ approvals: 2 });
@@ -60,13 +73,12 @@ describe('money', () => {
 });
 
 describe('contract', () => {
-  it('accepts a valid request message and fills defaults', () => {
-    const m = requestMessage.parse({
-      messageId: 'msg-00000001', system: 'hr', contractVersion: '1.0.0', sentAt: new Date().toISOString(), traceId: 'abc123', type: 'request.upsert',
-      request: { externalId: 'PR-2026-10', version: 1, kind: 'payroll', title: 'Payroll · October' },
-    });
+  it('accepts any well-formed request type key from the HR system', () => {
+    const base = { messageId: 'msg-00000001', system: 'hr', contractVersion: '1.0.0', sentAt: new Date().toISOString(), traceId: 'abc123', type: 'request.upsert' };
+    const m = requestMessage.parse({ ...base, request: { externalId: 'TR-1', version: 1, kind: 'training_budget', title: 'Training budget' } });
     expect(m.request.facts).toEqual([]);
-    expect(m.request.bulkEligible).toBe(false);
+    expect(() => requestMessage.parse({ ...base, system: 'other', request: { externalId: 'X', version: 1, kind: 'leave', title: 'x' } })).toThrow();
+    expect(() => requestMessage.parse({ ...base, request: { externalId: 'X', version: 1, kind: 'Not OK', title: 'x' } })).toThrow();
   });
 
   it('compares versions', () => {

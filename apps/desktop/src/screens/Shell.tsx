@@ -6,6 +6,7 @@ import { Overview } from './Overview';
 import { Approvals } from './Approvals';
 import { AuditLog } from './AuditLog';
 import { Logins } from './Logins';
+import { Settings } from './Settings';
 
 type Page = 'overview' | 'approvals' | 'logins' | 'access' | 'audit' | 'settings';
 
@@ -94,7 +95,7 @@ export function Shell({ me, env, appVersion, onSignOut }: { me: Me; env: string;
           </div>
         </header>
         <main className="main">
-          {env === 'staging' && <div className="alert alert-warn" role="status"><strong>Staging.</strong> Test data and test copies of the HR system and Predicto. Nothing here reaches real people or payments.</div>}
+          {env === 'staging' && <div className="alert alert-warn" role="status"><strong>Staging.</strong> Test data and a test copy of the HR system. Nothing here reaches real people or payments.</div>}
           {update?.state === 'ready' && (
             <div className="alert alert-good row between" role="status">
               <span>Version {update.detail} is ready. It installs when you restart.</span>
@@ -105,7 +106,8 @@ export function Shell({ me, env, appVersion, onSignOut }: { me: Me; env: string;
           {page === 'approvals' && <Approvals me={me} initialId={openRequest} />}
           {page === 'audit' && <AuditLog />}
           {page === 'logins' && <Logins me={me} />}
-          {(page === 'access' || page === 'settings') && (
+          {page === 'settings' && <Settings me={me} />}
+          {page === 'access' && (
             <>
               <h1>{PAGES.find((p) => p.id === page)!.label}</h1>
               <div className="card quiet">This screen is designed in the mockup and its API is in place. The screen arrives in the next build (see docs/NEXT.md).</div>

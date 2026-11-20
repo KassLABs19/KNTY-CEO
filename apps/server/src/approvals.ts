@@ -2,43 +2,29 @@ import { randomUUID } from 'node:crypto';
 import {
   CONTRACT_VERSION,
   DEFAULT_RULES,
-  KIND_SYSTEM,
-  NEVER_DELEGATED,
-  consoleChain,
+  stepsFor,
   type ApprovalRules,
   type CancelMessage,
   type Decision,
   type DecisionMessage,
-  type Module,
-  type RequestKind,
   type RequestMessage,
   type RequestStatus,
-  type RoleKey,
+  type RequestTypeConfig,
+  type StepConfig,
 } from '@ceo/shared';
 import type { Tx } from './db.js';
 import type { CurrentUser } from './guard.js';
 import { audit } from './audit.js';
 import { AppError } from './errors.js';
-
-/** Which access-matrix module covers each kind of request. */
-export const KIND_MODULE: Record<RequestKind, Module> = {
-  leave: 'leave',
-  payroll: 'payroll',
-  hire: 'people',
-  expense: 'finance',
-  refund: 'refunds',
-  manual_payment: 'predicto',
-};
-
-export const SYSTEM_NAME = { hr: 'HR system', predicto: 'Predicto' } as const;
+import { loadType } from './request-types.js';
 
 export interface RequestRow {
   id: string;
   company_id: string;
   ref: string;
-  system: 'hr' | 'predicto';
+  system: 'hr';
   external_id: string;
-  kind: RequestKind;
+  kind: string;
   version: number;
   title: string;
   subtitle: string;
@@ -63,7 +49,7 @@ export interface RequestRow {
 export interface StepRow {
   id: string;
   position: number;
-  role_key: RoleKey;
+  role_id: string;
   label: string;
   state: 'done' | 'now' | 'later' | 'rejected' | 'returned';
   decided_by: string | null;
@@ -74,7 +60,10 @@ export interface StepRow {
 
 export async function loadRules(tx: Tx): Promise<ApprovalRules> {
   const row = (await tx.query<{ rules: Partial<ApprovalRules> }>('SELECT rules FROM settings')).rows[0];
-  return { ...DEFAULT_RULES, ...(row?.rules ?? {}) };
+  return {
+    remindAfterHours: row?.rules.remindAfterHours ?? DEFAULT_RULES.remindAfterHours,
+    escalateAfterHours: row?.rules.escalateAfterHours ?? DEFAULT_RULES.escalateAfterHours,
+  };
 }
 
 export async function loadSteps(tx: Tx, requestId: string): Promise<StepRow[]> {
@@ -90,26 +79,28 @@ export interface Actor {
 /**
  * Who may decide the current step: the people holding the step's role, plus their active
  * delegates. Never the requester, never someone who already decided an earlier step of
- * this request (so payroll always has two different signers), and never a delegate for
- * kinds that are not delegated (payroll). If the only holder is the requester, the step
- * falls to the account owners instead.
+ * this request (so a two-signer chain always has two different people), and never a
+ * delegate when the request type says steps are not delegated. If the only holder is the
+ * requester, the step falls to the account owners instead.
  */
-export async function actorsFor(tx: Tx, req: RequestRow, steps: StepRow[]): Promise<Actor[]> {
+export async function actorsFor(tx: Tx, req: RequestRow, steps: StepRow[], type?: RequestTypeConfig | null): Promise<Actor[]> {
   const step = steps.find((s) => s.position === req.current_step);
   if (!step || req.status !== 'pending') return [];
   const alreadySigned = new Set(steps.filter((s) => s.decided_by).flatMap((s) => [s.decided_by!, s.on_behalf_of].filter(Boolean) as string[]));
   const excluded = (id: string) => id === req.requester_user_id || alreadySigned.has(id);
 
   let holders = (await tx.query<{ id: string }>(
-    `SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = $1 AND u.status = 'active' AND u.locked_at IS NULL`,
-    [step.role_key],
+    `SELECT id FROM users WHERE role_id = $1 AND status = 'active' AND locked_at IS NULL`,
+    [step.role_id],
   )).rows.map((r) => r.id);
   if (holders.length > 0 && holders.every(excluded)) {
     holders = (await tx.query<{ id: string }>(`SELECT id FROM users WHERE is_owner AND status = 'active' AND locked_at IS NULL`)).rows.map((r) => r.id);
   }
   const actors: Actor[] = holders.filter((id) => !excluded(id)).map((userId) => ({ userId, onBehalfOf: null }));
 
-  if (!NEVER_DELEGATED.includes(req.kind) && holders.length > 0) {
+  const t = type === undefined ? await loadType(tx, req.kind) : type;
+  // An unknown type is treated as not delegated: the safer reading.
+  if (t?.delegable && holders.length > 0) {
     const delegates = (await tx.query<{ to_user_id: string; from_user_id: string }>(
       `SELECT d.to_user_id, d.from_user_id FROM delegations d JOIN users t ON t.id = d.to_user_id
         WHERE d.from_user_id = ANY($1) AND d.ended_at IS NULL AND d.starts_at <= now() AND d.ends_at > now()
@@ -141,7 +132,8 @@ export async function canSee(tx: Tx, user: CurrentUser, req: RequestRow, steps: 
   if (steps.some((s) => s.decided_by === user.id || s.on_behalf_of === user.id)) return true;
   if ((await actorsFor(tx, req, steps)).some((a) => a.userId === user.id)) return true;
   if ((user.role.levels.approvals ?? 0) < 1) return false;
-  if ((user.role.levels[KIND_MODULE[req.kind]] ?? 0) < 1) return false;
+  const type = await loadType(tx, req.kind);
+  if (!type || (user.role.levels[type.module] ?? 0) < 1) return false;
   if (user.role.scope === 'company') return true;
   return req.department !== null && req.department === user.department;
 }
@@ -156,35 +148,36 @@ async function event(tx: Tx, req: { id: string; company_id: string }, what: stri
   await tx.query('INSERT INTO request_events (company_id, request_id, actor_id, what) VALUES ($1, $2, $3, $4)', [req.company_id, req.id, actorId, what]);
 }
 
-async function writeSteps(tx: Tx, req: { id: string; company_id: string }, plan: { role: RoleKey; label: string }[]) {
+async function writeSteps(tx: Tx, req: { id: string; company_id: string }, plan: StepConfig[]) {
   await tx.query('DELETE FROM request_steps WHERE request_id = $1', [req.id]);
   for (const [i, s] of plan.entries()) {
     await tx.query(
-      'INSERT INTO request_steps (company_id, request_id, position, role_key, label, state) VALUES ($1, $2, $3, $4, $5, $6)',
-      [req.company_id, req.id, i, s.role, s.label, i === 0 ? 'now' : 'later'],
+      'INSERT INTO request_steps (company_id, request_id, position, role_id, label, state) VALUES ($1, $2, $3, $4, $5, $6)',
+      [req.company_id, req.id, i, s.roleId, s.label, i === 0 ? 'now' : 'later'],
     );
   }
 }
 
-export type UpsertResult = { status: 'created' | 'updated' | 'ignored_old_version' | 'not_routed'; requestId?: string };
+export type UpsertResult = { status: 'created' | 'updated' | 'ignored_old_version'; requestId?: string };
 
 /**
- * A partner sent a request, or a new version of one. A newer version always restarts the
+ * The HR system sent a request, or a new version of one. Its steps come from the request
+ * type an owner set up; a kind nobody has set up (or that is switched off) is refused, so
+ * the HR system keeps it and can resend once it is routed. A newer version always restarts the
  * Control Center's steps from the first one, so nobody's earlier approval carries over
  * to content they never saw.
  */
 export async function upsertRequest(tx: Tx, companyId: string, msg: RequestMessage): Promise<UpsertResult> {
   const r = msg.request;
-  if (KIND_SYSTEM[r.kind] !== msg.system) throw new AppError(400, 'wrong_system', `${SYSTEM_NAME[msg.system]} can’t send ${r.kind} requests.`);
-  const rules = await loadRules(tx);
+  const type = await loadType(tx, r.kind);
+  if (!type || !type.active) {
+    throw new AppError(422, 'not_routed', `No active request type “${r.kind}” is set up. An owner can add it in Settings › Request types.`);
+  }
+  const plan = stepsFor(type, r.money?.amountMinor ?? null);
+  if (plan.length === 0) throw new AppError(422, 'not_routed', `Request type “${type.name}” has no steps for this amount.`);
   const requester = r.requesterEmployeeId
-    ? (await tx.query<{ id: string; key: RoleKey | null }>(
-        'SELECT u.id, ro.key FROM users u JOIN people p ON p.id = u.person_id JOIN roles ro ON ro.id = u.role_id WHERE p.employee_id = $1',
-        [r.requesterEmployeeId],
-      )).rows[0]
+    ? (await tx.query<{ id: string }>('SELECT u.id FROM users u JOIN people p ON p.id = u.person_id WHERE p.employee_id = $1', [r.requesterEmployeeId])).rows[0]
     : undefined;
-  const plan = consoleChain({ kind: r.kind, amountMinor: r.money?.amountMinor ?? null, requesterRoleKey: requester?.key ?? null }, rules);
-  if (plan.length === 0) return { status: 'not_routed' };
 
   const existing = (await tx.query<RequestRow>('SELECT * FROM requests WHERE system = $1 AND external_id = $2 FOR UPDATE', [msg.system, r.externalId])).rows[0];
   if (existing && r.version <= existing.version) return { status: 'ignored_old_version', requestId: existing.id };
@@ -204,7 +197,7 @@ export async function upsertRequest(tx: Tx, companyId: string, msg: RequestMessa
       [...values, existing.status === 'pending', existing.id],
     )).rows[0]!;
     await writeSteps(tx, req, plan);
-    await event(tx, req, `Version ${r.version} arrived from the ${SYSTEM_NAME[msg.system]}. The Control Center steps start again from the first one.`);
+    await event(tx, req, `Version ${r.version} arrived from the HR system. The Control Center steps start again from the first one.`);
     await audit(tx, { companyId, action: 'request.new_version', category: 'sync', targetType: 'request', targetId: req.ref, traceId: msg.traceId, detail: { from: existing.version, to: r.version, previousStatus: existing.status } });
   } else {
     req = (await tx.query<RequestRow>(
@@ -214,7 +207,7 @@ export async function upsertRequest(tx: Tx, companyId: string, msg: RequestMessa
       [...values, companyId, msg.system, r.externalId, r.kind],
     )).rows[0]!;
     await writeSteps(tx, req, plan);
-    await event(tx, req, `Arrived from the ${SYSTEM_NAME[msg.system]} after its own steps.`);
+    await event(tx, req, `Arrived from the HR system after its own steps.`);
     await audit(tx, { companyId, action: 'request.received', category: 'sync', targetType: 'request', targetId: req.ref, traceId: msg.traceId, detail: { kind: r.kind } });
   }
   await notifyActors(tx, req, await actorsFor(tx, req, await loadSteps(tx, req.id)), `${req.title} is waiting for your decision.`);
@@ -225,7 +218,7 @@ export async function cancelRequest(tx: Tx, companyId: string, msg: CancelMessag
   const req = (await tx.query<RequestRow>('SELECT * FROM requests WHERE system = $1 AND external_id = $2 FOR UPDATE', [msg.system, msg.externalId])).rows[0];
   if (!req || msg.version < req.version || ['approved', 'rejected', 'cancelled'].includes(req.status)) return 'ignored';
   await tx.query(`UPDATE requests SET status = 'cancelled', updated_at = now() WHERE id = $1`, [req.id]);
-  await event(tx, req, `Withdrawn in the ${SYSTEM_NAME[msg.system]}${msg.reason ? `: ${msg.reason}` : '.'}`);
+  await event(tx, req, `Withdrawn in the HR system${msg.reason ? `: ${msg.reason}` : '.'}`);
   await audit(tx, { companyId, action: 'request.cancelled_upstream', category: 'sync', targetType: 'request', targetId: req.ref, traceId: msg.traceId });
   return 'cancelled';
 }
@@ -249,16 +242,16 @@ export async function decide(tx: Tx, user: CurrentUser, requestId: string, input
   if (!(await canSee(tx, user, req, steps))) throw new AppError(404, 'not_found', 'Request not found.');
   if (req.status !== 'pending') throw new AppError(409, 'already_decided', 'This request was already decided.');
   if (input.version !== req.version) {
-    throw new AppError(409, 'stale_version', `This request changed in the ${SYSTEM_NAME[req.system]} (now version ${req.version}). Review the new version, then decide again.`);
+    throw new AppError(409, 'stale_version', `This request changed in the HR system (now version ${req.version}). Review the new version, then decide again.`);
   }
   if (req.requester_user_id === user.id) throw new AppError(403, 'self_approval', 'You can’t decide a request you raised.');
   if (steps.some((s) => s.decided_by === user.id || s.on_behalf_of === user.id)) {
     throw new AppError(403, 'same_signer', 'You already signed an earlier step. A different person must sign this one.');
   }
-  const me = (await actorsFor(tx, req, steps)).find((a) => a.userId === user.id);
+  const me = (await actorsFor(tx, req, steps, await loadType(tx, req.kind))).find((a) => a.userId === user.id);
   if (!me) throw new AppError(403, 'not_your_step', 'This step is waiting on someone else.');
-  const rules = await loadRules(tx);
-  if (input.decision === 'approve' && rules.reauthFor.includes(req.kind) && !input.reauthOk) {
+  const type = await loadType(tx, req.kind);
+  if (input.decision === 'approve' && (type?.reauth ?? true) && !input.reauthOk) {
     throw new AppError(401, 'reauth_required', 'Enter your password again to approve this.');
   }
   const note = input.note?.trim() || null;
@@ -283,8 +276,8 @@ export async function decide(tx: Tx, user: CurrentUser, requestId: string, input
       [req.id],
     );
   } else {
-    // Payroll locks once approved: any later change arrives as a new version needing both signatures again.
-    await tx.query('UPDATE requests SET status = $2, locked = $3, changed_upstream = false, updated_at = now() WHERE id = $1', [req.id, status, status === 'approved' && req.kind === 'payroll']);
+    // Some types lock once approved: any later change arrives as a new version needing every signature again.
+    await tx.query('UPDATE requests SET status = $2, locked = $3, changed_upstream = false, updated_at = now() WHERE id = $1', [req.id, status, status === 'approved' && Boolean(type?.lockWhenApproved)]);
   }
 
   const words = { approve: 'Approved', reject: 'Rejected', send_back: 'Sent back for changes' }[input.decision];
